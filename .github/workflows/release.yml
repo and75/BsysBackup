@@ -1,0 +1,58 @@
+name: Release
+
+# Pubblica una GitHub Release con l'installer Windows quando si crea un tag di versione (es. v0.2.0).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      # Installer non firmato: nessun certificato da cercare
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Controlla che il tag corrisponda alla versione di package.json
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Il tag $env:GITHUB_REF_NAME non corrisponde alla versione $version di package.json"
+          }
+      - run: npm ci
+      - run: npm run dist:win
+      - name: Installa in modalità silenziosa e prova l'app installata
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem release -Filter "BsysBackup-Setup-*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Installer non trovato in release/" }
+          Write-Host "Installer: $($setup.Name), $([math]::Round($setup.Length / 1MB, 1)) MB"
+          Start-Process -FilePath $setup.FullName -ArgumentList "/S" -Wait
+          $exe = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Programs") -Recurse -Filter "BsysBackup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "BsysBackup.exe non trovato dopo l'installazione" }
+          Write-Host "Installato in: $($exe.FullName)"
+          node scripts/smoke-packaged.js $exe.FullName
+      - name: Pubblica la release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $setup = Get-ChildItem release -Filter "BsysBackup-Setup-*.exe" | Select-Object -First 1
+          $notes = "Installer per Windows a 64 bit. Non è firmato: all'avvio Windows SmartScreen mostra un avviso, si prosegue con ""Ulteriori informazioni"" e poi ""Esegui comunque""."
+          gh release create $env:GITHUB_REF_NAME $setup.FullName --title "BsysBackup $env:GITHUB_REF_NAME" --notes $notes --generate-notes --verify-tag
+          if ($LASTEXITCODE -ne 0) { throw "Creazione della release non riuscita" }
