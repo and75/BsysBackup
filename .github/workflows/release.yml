@@ -53,6 +53,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $setup = Get-ChildItem release -Filter "BsysBackup-Setup-*.exe" | Select-Object -First 1
-          $notes = "Installer per Windows a 64 bit. Non è firmato: all'avvio Windows SmartScreen mostra un avviso, si prosegue con ""Ulteriori informazioni"" e poi ""Esegui comunque""."
-          gh release create $env:GITHUB_REF_NAME $setup.FullName --title "BsysBackup $env:GITHUB_REF_NAME" --notes $notes --generate-notes --verify-tag
+          Set-Content -Path release-notes.md -Encoding utf8 -Value 'Installer per Windows a 64 bit. Non è firmato: all''avvio Windows SmartScreen mostra un avviso; si prosegue con **Ulteriori informazioni** e poi **Esegui comunque**.'
+          gh release create $env:GITHUB_REF_NAME $setup.FullName --title "BsysBackup $env:GITHUB_REF_NAME" --notes-file release-notes.md --generate-notes --verify-tag
           if ($LASTEXITCODE -ne 0) { throw "Creazione della release non riuscita" }
