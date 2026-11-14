@@ -1,4 +1,4 @@
-import type { Job, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
+import type { DeviceStatus, Job, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
 
 export interface JobChanges {
   name?: string;
@@ -17,6 +17,7 @@ export interface BsysApi {
   setOverride(args: { jobId: string; relativePath: string; destination: string }): Promise<Job>;
   removeOverride(args: { jobId: string; relativePath: string }): Promise<Job>;
   listSubfolders(args: { jobId: string; relativePath: string }): Promise<string[]>;
+  checkDevices(args: { jobId: string }): Promise<DeviceStatus>;
   previewJob(args: { jobId: string }): Promise<PreviewSummary>;
   runJob(args: { jobId: string }): Promise<ReportSummary>;
   cancelJob(): Promise<void>;

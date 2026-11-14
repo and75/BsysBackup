@@ -128,3 +128,10 @@ export interface PreviewSummary {
   warnings: string[];
   warningsOmitted: number;
 }
+
+/** Esito del controllo rapido dei dispositivi di un backup, fatto senza leggere il contenuto delle cartelle */
+export interface DeviceStatus {
+  sourceConnected: boolean;
+  /** Destinazioni il cui disco non è collegato */
+  missingDestinations: string[];
+}

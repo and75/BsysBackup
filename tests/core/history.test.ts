@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createJob, deleteJob, listJobs, loadJob, saveJob, setOverride, updateJob } from "../../src/core/job";
 import { REPORT_ID_PATTERN, readHistory, reportTextPath } from "../../src/core/report";
-import { previewDiff, runBackup, summarizePreview } from "../../src/core/runner";
+import { checkDevices, previewDiff, runBackup, summarizePreview } from "../../src/core/runner";
 import type { Job, PlannedFile, PreviewResult } from "../../src/core/types";
 
 let base: string;
@@ -136,5 +136,21 @@ describe("gestione dei backup configurati", () => {
   it("rifiuta un identificativo che non è quello di un backup", async () => {
     await expect(loadJob(jobsDir(), "../../etc/passwd")).rejects.toThrow(/non valido/);
     await expect(deleteJob(jobsDir(), "..")).rejects.toThrow(/non valido/);
+  });
+});
+
+describe("checkDevices (controllo dei dispositivi prima dell'analisi)", () => {
+  it("considera collegata una destinazione non ancora creata su un disco presente", async () => {
+    expect(await checkDevices(job)).toEqual({ sourceConnected: true, missingDestinations: [] });
+  });
+
+  it("segnala la sorgente assente", async () => {
+    const moved = updateJob(job, { sourceRoot: join(base, "non-esiste") });
+    expect((await checkDevices(moved)).sourceConnected).toBe(false);
+  });
+
+  it.runIf(process.platform === "win32")("su Windows segnala i dischi di destinazione non collegati", async () => {
+    const away = setOverride(updateJob(job, { defaultDestination: "Q:\\Backup" }), "Foto", "R:\\Foto");
+    expect(await checkDevices(away)).toEqual({ sourceConnected: true, missingDestinations: ["Q:\\Backup", "R:\\Foto"] });
   });
 });

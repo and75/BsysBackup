@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("api", {
   setOverride: (args: unknown) => ipcRenderer.invoke("job:setOverride", args),
   removeOverride: (args: unknown) => ipcRenderer.invoke("job:removeOverride", args),
   listSubfolders: (args: unknown) => ipcRenderer.invoke("job:listSubfolders", args),
+  checkDevices: (args: unknown) => ipcRenderer.invoke("job:devices", args),
   previewJob: (args: unknown) => ipcRenderer.invoke("job:preview", args),
   runJob: (args: unknown) => ipcRenderer.invoke("job:run", args),
   cancelJob: () => ipcRenderer.invoke("job:cancel"),

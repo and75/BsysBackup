@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { createJob, deleteJob, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
-import { previewDiff, runBackup, summarizePreview } from "../core/runner";
+import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
 import { toAbs } from "../core/router";
 import type { ProgressInfo } from "../core/types";
@@ -88,6 +88,8 @@ function registerIpcHandlers(): void {
       return [];
     }
   });
+
+  ipcMain.handle("job:devices", async (_e, args: { jobId: string }) => checkDevices(await loadJob(jobsDir(), args.jobId)));
 
   ipcMain.handle("job:preview", async (_e, args: { jobId: string }) => {
     const job = await loadJob(jobsDir(), args.jobId);

@@ -1,5 +1,5 @@
 import type { Job, ProgressInfo, ReportSummary } from "../core/types";
-import { cancelRun, guard, lastReportFor, navigate, onProgress, runJob, state } from "./app.js";
+import { analyze, cancelRun, destinationRoots, guard, lastReportFor, navigate, onProgress, runJob, state } from "./app.js";
 import { fileCount, formatDayRelative, formatNumber, formatWhen, h, icon } from "./dom.js";
 
 type Tone = "ok" | "warn" | "info" | "muted";
@@ -11,6 +11,8 @@ interface CardStatus {
   detail: string;
   detailTone: "muted" | "warn";
   canRun: boolean;
+  /** true se l'analisi non è partita perché manca un dispositivo: la scheda offre "Ricontrolla" */
+  recheck?: boolean;
 }
 
 function lastBackupText(report: ReportSummary | undefined): string {
@@ -30,6 +32,17 @@ function cardStatus(job: Job): CardStatus {
 
   if (!preview || preview.status === "loading") {
     return { pill: "Analisi in corso", tone: "muted", detail: last, detailTone: "muted", canRun: !busy };
+  }
+  if (preview.status === "disconnected") {
+    const { devices } = preview;
+    if (!devices.sourceConnected) {
+      return { pill: "Sorgente assente", tone: "warn", detail: `Collega ${job.sourceRoot} per eseguire il backup`, detailTone: "warn", canRun: false, recheck: true };
+    }
+    const disks = devices.missingDestinations.join(", ");
+    if (devices.missingDestinations.length === destinationRoots(job).length) {
+      return { pill: "Disco assente", tone: "muted", detail: `Collega ${disks} per eseguire il backup`, detailTone: "muted", canRun: false, recheck: true };
+    }
+    return { pill: "Disco assente", tone: "warn", detail: `${disks} non collegato: analisi non eseguita`, detailTone: "warn", canRun: !busy, recheck: true };
   }
   if (preview.status === "error") {
     return { pill: "Sorgente assente", tone: "warn", detail: preview.message, detailTone: "warn", canRun: false };
@@ -77,7 +90,7 @@ export function progressBlock(): HTMLElement {
 }
 
 function destinationsText(job: Job): string {
-  const count = new Set([job.defaultDestination, ...job.overrides.map((o) => o.destination)]).size;
+  const count = destinationRoots(job).length;
   return `${job.sourceRoot}, su ${count === 1 ? "1 destinazione" : `${count} destinazioni`}`;
 }
 
@@ -110,7 +123,13 @@ function jobCard(job: Job): HTMLElement {
       h("h2", null, job.name),
       h("span", { class: `pill pill-${status.tone}` }, status.tone === "ok" && icon("check", 12), status.pill)
     ),
-    h("div", { class: "card-body" }, h("div", null, destinationsText(job)), h("div", { class: status.detailTone }, status.detail)),
+    h(
+      "div",
+      { class: "card-body" },
+      h("div", null, destinationsText(job)),
+      h("div", { class: status.detailTone }, status.detail),
+      status.recheck && h("button", { type: "button", class: "link", onclick: guard(() => analyze(job.id)) }, "Ricontrolla")
+    ),
     h(
       "div",
       { class: "card-actions" },

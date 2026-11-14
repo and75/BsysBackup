@@ -1,9 +1,14 @@
 /// <reference path="./global.d.ts" />
-import type { Job, Override, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
+import type { DeviceStatus, Job, Override, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
 
 export type View = { name: "home" } | { name: "new" } | { name: "job"; jobId: string } | { name: "result"; report: ReportSummary };
 
-export type PreviewState = { status: "loading" } | { status: "ready"; summary: PreviewSummary } | { status: "error"; message: string };
+export type PreviewState =
+  | { status: "loading" }
+  | { status: "ready"; summary: PreviewSummary }
+  | { status: "error"; message: string }
+  /** Analisi non avviata: la sorgente o un disco di destinazione non è collegato */
+  | { status: "disconnected"; devices: DeviceStatus };
 
 export interface Running {
   jobId: string;
@@ -85,6 +90,10 @@ export function resolveDestination(job: Job, relPath: string): string {
   return best?.destination ?? job.defaultDestination;
 }
 
+export function destinationRoots(job: Job): string[] {
+  return [...new Set([job.defaultDestination, ...job.overrides.map((o) => o.destination)])];
+}
+
 function replaceJob(job: Job): void {
   state.jobs = state.jobs.map((j) => (j.id === job.id ? job : j));
 }
@@ -103,18 +112,55 @@ export async function refreshPreview(jobId: string): Promise<void> {
   render();
 }
 
-/** Analizza un backup alla volta: più scansioni insieme sullo stesso disco si rallentano a vicenda */
-async function analyzeMissing(): Promise<void> {
-  for (const job of [...state.jobs]) {
-    if (!state.previews.has(job.id) && state.running?.jobId !== job.id) await refreshPreview(job.id);
+/**
+ * Analisi automatica: parte solo se la sorgente e tutti i dischi di destinazione sono collegati.
+ * Il controllo dei dispositivi è immediato, la scansione no: inutile avviarla per poi fermarsi a metà.
+ */
+export async function analyze(jobId: string): Promise<void> {
+  state.previews.set(jobId, { status: "loading" });
+  render();
+  let devices: DeviceStatus;
+  try {
+    devices = await window.api.checkDevices({ jobId });
+  } catch (err) {
+    if (jobById(jobId)) state.previews.set(jobId, { status: "error", message: errorMessage(err) });
+    render();
+    return;
   }
+  if (!jobById(jobId)) return;
+  if (!devices.sourceConnected || devices.missingDestinations.length > 0) {
+    state.previews.set(jobId, { status: "disconnected", devices });
+    render();
+    return;
+  }
+  await refreshPreview(jobId);
+}
+
+let analyzing = false;
+
+/** Analizza un backup alla volta: più scansioni insieme sullo stesso disco si rallentano a vicenda */
+async function analyzeWhere(needsAnalysis: (preview: PreviewState | undefined) => boolean): Promise<void> {
+  if (analyzing) return;
+  analyzing = true;
+  try {
+    for (const job of [...state.jobs]) {
+      if (state.running?.jobId !== job.id && needsAnalysis(state.previews.get(job.id))) await analyze(job.id);
+    }
+  } finally {
+    analyzing = false;
+  }
+}
+
+/** Ricontrolla i backup rimasti senza analisi perché mancava un disco: utile dopo averlo collegato */
+export function recheckDisconnected(): Promise<void> {
+  return analyzeWhere((preview) => preview?.status === "disconnected");
 }
 
 export async function init(): Promise<void> {
   [state.jobs, state.history] = await Promise.all([window.api.listJobs(), window.api.listHistory()]);
   state.loaded = true;
   render();
-  await analyzeMissing();
+  await analyzeWhere((preview) => preview === undefined);
 }
 
 async function loadChildren(jobId: string, relPath: string): Promise<void> {
@@ -135,7 +181,8 @@ export function navigate(view: View): void {
     guard(async () => {
       await loadChildren(jobId, "");
       render();
-      if (!state.previews.has(jobId)) await refreshPreview(jobId);
+      const current = state.previews.get(jobId);
+      if (!current || current.status === "disconnected") await analyze(jobId);
     })();
   }
   render();
@@ -159,12 +206,12 @@ export async function assignOverride(jobId: string, relPath: string): Promise<vo
   const destination = await window.api.selectFolder();
   if (!destination) return;
   replaceJob(await window.api.setOverride({ jobId, relativePath: relPath, destination }));
-  await refreshPreview(jobId);
+  await analyze(jobId);
 }
 
 export async function clearOverride(jobId: string, relPath: string): Promise<void> {
   replaceJob(await window.api.removeOverride({ jobId, relativePath: relPath }));
-  await refreshPreview(jobId);
+  await analyze(jobId);
 }
 
 export async function changeFolder(jobId: string, field: "sourceRoot" | "defaultDestination"): Promise<void> {
@@ -175,7 +222,7 @@ export async function changeFolder(jobId: string, field: "sourceRoot" | "default
     state.tree = { expanded: new Set([""]), children: new Map(), selected: null };
     await loadChildren(jobId, "");
   }
-  await refreshPreview(jobId);
+  await analyze(jobId);
 }
 
 export async function setVerifyWithHash(jobId: string, value: boolean): Promise<void> {
@@ -225,7 +272,7 @@ export async function runJob(jobId: string): Promise<void> {
     state.running = null;
     render();
   }
-  await refreshPreview(jobId);
+  await analyze(jobId);
 }
 
 export async function cancelRun(): Promise<void> {
@@ -244,3 +291,6 @@ window.api.onProgress((info) => {
   state.running.progress = info;
   for (const listener of progressListeners) listener(info);
 });
+
+// Tornando all'app dopo aver collegato un disco, i backup in attesa vengono ricontrollati da soli
+window.addEventListener("focus", guard(recheckDisconnected));

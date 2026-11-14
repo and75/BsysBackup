@@ -1,10 +1,12 @@
 import type { Job, PreviewSummary } from "../core/types";
 import {
+  analyze,
   assignOverride,
   cancelRun,
   changeFolder,
   clearOverride,
   deleteJob,
+  destinationRoots,
   guard,
   navigate,
   onProgress,
@@ -35,6 +37,7 @@ function folderField(job: Job, label: string, field: "sourceRoot" | "defaultDest
 
 function unreachableRoots(job: Job): Set<string> {
   const preview = state.previews.get(job.id);
+  if (preview?.status === "disconnected") return new Set(preview.devices.missingDestinations);
   if (preview?.status !== "ready") return new Set();
   return new Set(preview.summary.destinations.filter((d) => !d.reachable).map((d) => d.destinationRoot));
 }
@@ -139,8 +142,8 @@ function previewPanel(job: Job): HTMLElement {
   const preview = state.previews.get(job.id);
   const refresh = h(
     "button",
-    { type: "button", class: "btn btn-small", disabled: !preview || preview.status === "loading", onclick: guard(() => refreshPreview(job.id)) },
-    "Aggiorna"
+    { type: "button", class: "btn btn-small", disabled: !preview || preview.status === "loading", onclick: guard(() => analyze(job.id)) },
+    preview?.status === "disconnected" ? "Ricontrolla" : "Aggiorna"
   );
   const head = h("div", { class: "panel-head" }, h("h2", null, "Cosa cambierà"), refresh);
 
@@ -149,6 +152,25 @@ function previewPanel(job: Job): HTMLElement {
   }
   if (preview.status === "error") {
     return h("section", { class: "panel side", "aria-label": "Anteprima" }, head, h("p", { class: "warn" }, preview.message));
+  }
+  if (preview.status === "disconnected") {
+    const { devices } = preview;
+    const missing = devices.sourceConnected ? devices.missingDestinations.join(", ") : job.sourceRoot;
+    const canForce = devices.sourceConnected && devices.missingDestinations.length < destinationRoots(job).length;
+    return h(
+      "section",
+      { class: "panel side", "aria-label": "Anteprima" },
+      head,
+      h("p", { class: "warn with-icon" }, icon("warning", 16), `${missing} non collegato`),
+      h("p", { class: "muted" }, "L'analisi non è stata avviata. Collega il disco: al ritorno su questa finestra riparte da sola, oppure premi Ricontrolla."),
+      canForce &&
+        h(
+          "div",
+          { class: "side-footer" },
+          h("p", { class: "muted small" }, "Puoi comunque analizzare e salvare sui dischi collegati: i file destinati al disco mancante verranno saltati."),
+          h("button", { type: "button", class: "btn", disabled: state.running !== null, onclick: guard(() => refreshPreview(job.id)) }, "Analizza comunque")
+        )
+    );
   }
 
   const { summary } = preview;

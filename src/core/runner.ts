@@ -1,10 +1,23 @@
-import type { BackupReport, CopyResult, DestinationGroupReport, FileEntry, Job, PlannedFile, PreviewResult, PreviewSummary, ProgressInfo } from "./types";
+import type { BackupReport, CopyResult, DestinationGroupReport, DeviceStatus, FileEntry, Job, PlannedFile, PreviewResult, PreviewSummary, ProgressInfo } from "./types";
 import { isReachable, pathExists, scanDirectory } from "./scanner";
 import { listDestinationRoots, planRegionCopies, resolveRegionPath } from "./router";
 import { buildDiff } from "./differ";
 import { copyPlannedFiles, ensureDir, isWindows, runRobocopy } from "./copier";
 import { verifyCopiedFile } from "./verifier";
 import { writeReportToDisk } from "./report";
+
+/**
+ * Dice se la sorgente e i dischi di destinazione sono collegati, senza scansionare nulla:
+ * serve a decidere se vale la pena avviare un'analisi.
+ */
+export async function checkDevices(job: Job): Promise<DeviceStatus> {
+  const sourceConnected = await pathExists(job.sourceRoot);
+  const missingDestinations: string[] = [];
+  for (const root of listDestinationRoots(job)) {
+    if (!(await isReachable(root))) missingDestinations.push(root);
+  }
+  return { sourceConnected, missingDestinations };
+}
 
 /**
  * Scansiona sorgente e destinazioni e calcola il diff, senza copiare né creare nulla.
