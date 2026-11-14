@@ -1,6 +1,6 @@
 {
   "name": "bsysbackup",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Backup differenziale con destinazioni multiple per sottocartella e organizzazione assistita da LLM locale",
   "private": true,
   "main": "dist/main/index.js",
@@ -33,6 +33,7 @@
       "output": "release"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -47,6 +48,8 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
       "artifactName": "BsysBackup-Setup-${version}.${ext}"
     }
   }
