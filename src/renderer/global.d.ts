@@ -1,15 +1,27 @@
-import type { Job, BackupReport, PreviewResult, ProgressInfo } from "../core/types";
+import type { Job, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
+
+export interface JobChanges {
+  name?: string;
+  sourceRoot?: string;
+  defaultDestination?: string;
+  verifyWithHash?: boolean;
+}
 
 export interface BsysApi {
+  platform: string;
   selectFolder(): Promise<string | null>;
   listJobs(): Promise<Job[]>;
   createJob(args: { name: string; sourceRoot: string; defaultDestination: string }): Promise<Job>;
+  updateJob(args: { jobId: string; changes: JobChanges }): Promise<Job>;
+  deleteJob(args: { jobId: string }): Promise<void>;
   setOverride(args: { jobId: string; relativePath: string; destination: string }): Promise<Job>;
   removeOverride(args: { jobId: string; relativePath: string }): Promise<Job>;
   listSubfolders(args: { jobId: string; relativePath: string }): Promise<string[]>;
-  previewJob(args: { jobId: string }): Promise<PreviewResult>;
-  runJob(args: { jobId: string; verifyWithHash: boolean }): Promise<BackupReport>;
+  previewJob(args: { jobId: string }): Promise<PreviewSummary>;
+  runJob(args: { jobId: string }): Promise<ReportSummary>;
   cancelJob(): Promise<void>;
+  listHistory(): Promise<ReportSummary[]>;
+  openReport(args: { reportId: string }): Promise<void>;
   onProgress(callback: (info: ProgressInfo) => void): void;
 }
 

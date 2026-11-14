@@ -1,4 +1,4 @@
-import type { BackupReport, CopyResult, DestinationGroupReport, FileEntry, Job, PlannedFile, PreviewResult, ProgressInfo } from "./types";
+import type { BackupReport, CopyResult, DestinationGroupReport, FileEntry, Job, PlannedFile, PreviewResult, PreviewSummary, ProgressInfo } from "./types";
 import { isReachable, pathExists, scanDirectory } from "./scanner";
 import { listDestinationRoots, planRegionCopies, resolveRegionPath } from "./router";
 import { buildDiff } from "./differ";
@@ -47,6 +47,34 @@ export async function previewDiff(job: Job): Promise<PreviewResult> {
 
   const { planned, removedFromSource } = buildDiff(job, source.entries, destEntriesByRoot);
   return { planned, removedFromSource, unreachableDestinations, warnings };
+}
+
+const SAMPLE_SIZE = 200;
+const WARNING_SAMPLE_SIZE = 50;
+
+/** Riduce un'anteprima a conteggi e campioni: l'elenco completo può avere centinaia di migliaia di voci */
+export function summarizePreview(job: Job, preview: PreviewResult): PreviewSummary {
+  const unreachable = new Set(preview.unreachableDestinations);
+  const changed = preview.planned.filter((f) => f.action === "new" || f.action === "modified");
+  const perDestination = new Map<string, number>();
+  for (const f of changed) perDestination.set(f.destinationRoot, (perDestination.get(f.destinationRoot) ?? 0) + 1);
+
+  return {
+    newFiles: changed.filter((f) => f.action === "new").length,
+    modifiedFiles: changed.filter((f) => f.action === "modified").length,
+    unchangedFiles: preview.planned.length - changed.length,
+    removedFromSource: preview.removedFromSource.length,
+    bytesToCopy: changed.reduce((sum, f) => sum + f.size, 0),
+    destinations: listDestinationRoots(job).map((root) => ({
+      destinationRoot: root,
+      reachable: !unreachable.has(root),
+      filesToCopy: perDestination.get(root) ?? 0,
+    })),
+    changed: changed.slice(0, SAMPLE_SIZE).map((f) => ({ action: f.action as "new" | "modified", relPath: f.relPath, destinationRoot: f.destinationRoot })),
+    changedOmitted: Math.max(0, changed.length - SAMPLE_SIZE),
+    warnings: preview.warnings.slice(0, WARNING_SAMPLE_SIZE),
+    warningsOmitted: Math.max(0, preview.warnings.length - WARNING_SAMPLE_SIZE),
+  };
 }
 
 export interface RunBackupOptions {
@@ -171,11 +199,13 @@ export async function runBackup(job: Job, opts: RunBackupOptions): Promise<Backu
   }
 
   const destinations = Array.from(destReports.values());
+  const finishedAt = new Date().toISOString();
   const report: BackupReport = {
+    id: `${job.id}_${finishedAt.replace(/[:.]/g, "-")}`,
     jobId: job.id,
     jobName: job.name,
     startedAt,
-    finishedAt: new Date().toISOString(),
+    finishedAt,
     totalPlanned: toCopy.length,
     totalCopied: destinations.reduce((n, d) => n + d.copied.length, 0),
     totalFailed: destinations.reduce((n, d) => n + d.failed.length, 0),

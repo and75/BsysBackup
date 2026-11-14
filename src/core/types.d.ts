@@ -51,6 +51,8 @@ export interface DestinationGroupReport {
 }
 
 export interface BackupReport {
+  /** Identificativo del report: nome dei file .json/.txt salvati e chiave nello storico */
+  id: string;
   jobId: string;
   jobName: string;
   startedAt: string;
@@ -81,4 +83,48 @@ export interface ProgressInfo {
   done: number;
   total: number;
   relPath?: string;
+}
+
+export interface DestinationSummary {
+  destinationRoot: string;
+  reachable: boolean;
+  copied: number;
+  failed: number;
+  skipped: number;
+}
+
+/** Riepilogo di un backup concluso: è ciò che finisce nello storico e che l'interfaccia mostra */
+export interface ReportSummary {
+  id: string;
+  jobId: string;
+  jobName: string;
+  startedAt: string;
+  finishedAt: string;
+  totalPlanned: number;
+  totalCopied: number;
+  totalFailed: number;
+  totalSkippedUnreachable: number;
+  cancelled: boolean;
+  totalInterrupted: number;
+  removedFromSource: number;
+  destinations: DestinationSummary[];
+  /** Primi file non copiati; gli altri sono nel report completo */
+  failures: { relPath: string; error: string }[];
+  failuresOmitted: number;
+  warnings: string[];
+  warningsOmitted: number;
+}
+
+/** Riepilogo di un'anteprima: conteggi e un campione, senza l'elenco completo dei file */
+export interface PreviewSummary {
+  newFiles: number;
+  modifiedFiles: number;
+  unchangedFiles: number;
+  removedFromSource: number;
+  bytesToCopy: number;
+  destinations: { destinationRoot: string; reachable: boolean; filesToCopy: number }[];
+  changed: { action: "new" | "modified"; relPath: string; destinationRoot: string }[];
+  changedOmitted: number;
+  warnings: string[];
+  warningsOmitted: number;
 }

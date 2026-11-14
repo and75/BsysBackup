@@ -2,93 +2,12 @@
 <html lang="it">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'" />
     <title>BsysBackup</title>
-    <style>
-      body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #1e1e1e; color: #ddd; }
-      h1 { font-size: 18px; margin-bottom: 12px; }
-      h2 { font-size: 14px; color: #9cc; margin: 18px 0 6px; }
-      section { border: 1px solid #333; border-radius: 6px; padding: 12px; margin-bottom: 14px; }
-      label { display: block; font-size: 12px; color: #999; margin-top: 8px; }
-      input, select { width: 100%; box-sizing: border-box; padding: 6px; margin-top: 2px; background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 4px; }
-      button { margin-top: 8px; margin-right: 6px; padding: 6px 12px; background: #2d6cdf; color: white; border: none; border-radius: 4px; cursor: pointer; }
-      button.secondary { background: #444; }
-      button:hover { opacity: 0.9; }
-      button:disabled { opacity: 0.4; cursor: default; }
-      label.check { color: #ccc; font-size: 13px; }
-      label.check input { width: auto; margin-right: 6px; }
-      #progress { font-size: 12px; color: #9cc; margin: 8px 0 4px; min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .row { display: flex; gap: 8px; align-items: flex-end; }
-      .row > div { flex: 1; }
-      #overridesList { list-style: none; padding: 0; margin: 6px 0; font-size: 13px; }
-      #overridesList li { padding: 4px 0; border-bottom: 1px solid #2a2a2a; display: flex; justify-content: space-between; }
-      #log { white-space: pre-wrap; font-family: monospace; font-size: 12px; background: #111; padding: 8px; border-radius: 4px; max-height: 260px; overflow-y: auto; }
-      .tag-new { color: #7fd17f; }
-      .tag-modified { color: #e0c36b; }
-      .tag-removed { color: #e07f7f; }
-      .tree, .tree-children { list-style: none; margin: 0; }
-      .tree-children { padding-left: 18px; }
-      .tree { max-height: 240px; overflow-y: auto; background: #181818; border: 1px solid #333; border-radius: 4px; padding: 6px 6px 6px 0; }
-      .tree-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 3px; cursor: default; }
-      .tree-row.selected { background: #2d6cdf33; }
-      .tree-toggle { width: 14px; display: inline-block; cursor: pointer; color: #888; user-select: none; }
-      .tree-name { cursor: pointer; flex: 1; }
-      .tree-name:hover { text-decoration: underline; }
-      .tree-badge { font-size: 11px; color: #9cc; background: #1d3a4a; padding: 1px 6px; border-radius: 10px; white-space: nowrap; }
-      #selectedPathLabel { font-size: 12px; color: #aaa; margin: 8px 0 4px; }
-    </style>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <h1>BsysBackup — backup differenziale con destinazioni multiple</h1>
-
-    <section>
-      <h2>Job esistente</h2>
-      <select id="jobSelect"><option value="">— nessuno —</option></select>
-    </section>
-
-    <section>
-      <h2>Nuovo job</h2>
-      <label>Nome</label>
-      <input id="jobName" placeholder="es. Backup PC principale" />
-      <div class="row">
-        <div>
-          <label>Sorgente</label>
-          <input id="sourceRoot" readonly />
-        </div>
-        <button class="secondary" id="pickSource">Scegli…</button>
-      </div>
-      <div class="row">
-        <div>
-          <label>Destinazione di default</label>
-          <input id="defaultDestination" readonly />
-        </div>
-        <button class="secondary" id="pickDest">Scegli…</button>
-      </div>
-      <button id="createJobBtn">Crea job</button>
-    </section>
-
-    <section id="overridesSection" style="display:none">
-      <h2>Destinazioni per sottocartella (override)</h2>
-      <label>Sfoglia la sorgente e scegli la sottocartella da reindirizzare</label>
-      <ul id="sourceTree" class="tree"></ul>
-      <div id="selectedPathLabel">Nessuna sottocartella selezionata</div>
-      <button class="secondary" id="assignOverrideBtn" disabled>Assegna destinazione diversa…</button>
-      <button class="secondary" id="removeOverrideBtn" disabled>Rimuovi override</button>
-
-      <h2>Override attivi</h2>
-      <ul id="overridesList"></ul>
-    </section>
-
-    <section id="actionsSection" style="display:none">
-      <h2>Esecuzione</h2>
-      <label class="check"><input type="checkbox" id="verifyWithHash" /> Verifica anche con hash SHA-256 (rilegge ogni file copiato: più lenta, certezza bit a bit)</label>
-      <button class="secondary" id="previewBtn">Anteprima differenze</button>
-      <button id="runBtn">Esegui backup</button>
-      <button class="secondary" id="cancelBtn" disabled>Annulla</button>
-      <div id="progress"></div>
-      <div id="log"></div>
-    </section>
-
+    <div id="app"></div>
     <script type="module" src="renderer.js"></script>
   </body>
 </html>

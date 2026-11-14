@@ -1,7 +1,7 @@
 const { copyFileSync, mkdirSync } = require("node:fs");
 const { join } = require("node:path");
 
-const src = join(__dirname, "..", "src", "renderer", "index.html");
+const srcDir = join(__dirname, "..", "src", "renderer");
 const destDir = join(__dirname, "..", "dist", "renderer");
 mkdirSync(destDir, { recursive: true });
-copyFileSync(src, join(destDir, "index.html"));
+for (const file of ["index.html", "styles.css"]) copyFileSync(join(srcDir, file), join(destDir, file));

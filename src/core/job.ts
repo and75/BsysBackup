@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Job, Override } from "./types";
@@ -30,15 +30,58 @@ export function removeOverride(job: Job, relativePath: string): Job {
   return { ...job, overrides: job.overrides.filter((o) => pathKey(o.relativePath) !== pathKey(normalized)) };
 }
 
+export type JobChanges = Partial<Pick<Job, "name" | "sourceRoot" | "defaultDestination" | "verifyWithHash">>;
+
+export function updateJob(job: Job, changes: JobChanges): Job {
+  const updated = { ...job };
+  if (changes.name !== undefined) {
+    if (!changes.name.trim()) throw new Error("Il nome del backup non può essere vuoto.");
+    updated.name = changes.name.trim();
+  }
+  if (changes.sourceRoot !== undefined) updated.sourceRoot = changes.sourceRoot;
+  if (changes.defaultDestination !== undefined) updated.defaultDestination = changes.defaultDestination;
+  if (changes.verifyWithHash !== undefined) updated.verifyWithHash = changes.verifyWithHash;
+  return updated;
+}
+
+const JOB_ID_PATTERN = /^[0-9a-f-]{36}$/;
+
+/** L'id diventa un nome di file: deve essere quello generato da createJob, non un percorso */
+function jobPath(jobsDir: string, jobId: string): string {
+  if (!JOB_ID_PATTERN.test(jobId)) throw new Error("Identificativo del backup non valido");
+  return join(jobsDir, `${jobId}.json`);
+}
+
 export async function saveJob(jobsDir: string, job: Job): Promise<string> {
   await mkdir(jobsDir, { recursive: true });
-  const path = join(jobsDir, `${job.id}.json`);
+  const path = jobPath(jobsDir, job.id);
   await writeFile(path, JSON.stringify(job, null, 2), "utf-8");
   return path;
 }
 
 export async function loadJob(jobsDir: string, jobId: string): Promise<Job> {
-  const path = join(jobsDir, `${jobId}.json`);
-  const raw = await readFile(path, "utf-8");
-  return JSON.parse(raw) as Job;
+  return JSON.parse(await readFile(jobPath(jobsDir, jobId), "utf-8")) as Job;
+}
+
+/** Elimina solo la configurazione: i file già copiati e i report restano dove sono */
+export async function deleteJob(jobsDir: string, jobId: string): Promise<void> {
+  await rm(jobPath(jobsDir, jobId), { force: true });
+}
+
+export async function listJobs(jobsDir: string): Promise<Job[]> {
+  let names: string[];
+  try {
+    names = (await readdir(jobsDir)).filter((n) => n.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const jobs: Job[] = [];
+  for (const name of names) {
+    try {
+      jobs.push(await loadJob(jobsDir, name.replace(/\.json$/, "")));
+    } catch {
+      // file estraneo o illeggibile: ignorato
+    }
+  }
+  return jobs.sort((a, b) => a.name.localeCompare(b.name));
 }

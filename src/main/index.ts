@@ -1,40 +1,25 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
-import { createJob, loadJob, removeOverride, saveJob, setOverride } from "../core/job";
-import { previewDiff, runBackup } from "../core/runner";
+import { createJob, deleteJob, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
+import { previewDiff, runBackup, summarizePreview } from "../core/runner";
+import { readHistory, reportTextPath, toReportSummary } from "../core/report";
 import { toAbs } from "../core/router";
-import type { Job, ProgressInfo } from "../core/types";
+import type { ProgressInfo } from "../core/types";
 
 let currentRun: AbortController | null = null;
 
-function userDataSubdir(name: string): string {
-  return join(app.getPath("userData"), name);
-}
-
-async function listJobs(): Promise<Job[]> {
-  const dir = userDataSubdir("jobs");
-  let names: string[] = [];
-  try {
-    names = (await readdir(dir)).filter((n) => n.endsWith(".json"));
-  } catch {
-    return [];
-  }
-  const jobs: Job[] = [];
-  for (const n of names) {
-    try {
-      jobs.push(await loadJob(dir, n.replace(/\.json$/, "")));
-    } catch {
-      // file corrotto/illeggibile: ignorato
-    }
-  }
-  return jobs;
-}
+const jobsDir = () => join(app.getPath("userData"), "jobs");
+const reportsDir = () => join(app.getPath("userData"), "reports");
 
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 1000,
-    height: 720,
+    width: 1180,
+    height: 800,
+    minWidth: 720,
+    minHeight: 560,
+    backgroundColor: "#14161a",
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -66,46 +51,50 @@ function registerIpcHandlers(): void {
     return result.canceled ? null : result.filePaths[0];
   });
 
-  ipcMain.handle("job:list", async () => listJobs());
+  ipcMain.handle("job:list", () => listJobs(jobsDir()));
 
   ipcMain.handle("job:create", async (_e, args: { name: string; sourceRoot: string; defaultDestination: string }) => {
     const job = createJob(args);
-    await saveJob(userDataSubdir("jobs"), job);
+    await saveJob(jobsDir(), job);
     return job;
   });
 
+  ipcMain.handle("job:update", async (_e, args: { jobId: string; changes: JobChanges }) => {
+    const updated = updateJob(await loadJob(jobsDir(), args.jobId), args.changes);
+    await saveJob(jobsDir(), updated);
+    return updated;
+  });
+
+  ipcMain.handle("job:delete", (_e, args: { jobId: string }) => deleteJob(jobsDir(), args.jobId));
+
   ipcMain.handle("job:setOverride", async (_e, args: { jobId: string; relativePath: string; destination: string }) => {
-    const dir = userDataSubdir("jobs");
-    const job = await loadJob(dir, args.jobId);
-    const updated = setOverride(job, args.relativePath, args.destination);
-    await saveJob(dir, updated);
+    const updated = setOverride(await loadJob(jobsDir(), args.jobId), args.relativePath, args.destination);
+    await saveJob(jobsDir(), updated);
     return updated;
   });
 
   ipcMain.handle("job:removeOverride", async (_e, args: { jobId: string; relativePath: string }) => {
-    const dir = userDataSubdir("jobs");
-    const job = await loadJob(dir, args.jobId);
-    const updated = removeOverride(job, args.relativePath);
-    await saveJob(dir, updated);
+    const updated = removeOverride(await loadJob(jobsDir(), args.jobId), args.relativePath);
+    await saveJob(jobsDir(), updated);
     return updated;
   });
 
   ipcMain.handle("job:listSubfolders", async (_e, args: { jobId: string; relativePath: string }) => {
-    const job = await loadJob(userDataSubdir("jobs"), args.jobId);
+    const job = await loadJob(jobsDir(), args.jobId);
     try {
       const entries = await readdir(toAbs(job.sourceRoot, args.relativePath), { withFileTypes: true });
-      return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
+      return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort((a, b) => a.localeCompare(b));
     } catch {
       return [];
     }
   });
 
   ipcMain.handle("job:preview", async (_e, args: { jobId: string }) => {
-    const job = await loadJob(userDataSubdir("jobs"), args.jobId);
-    return previewDiff(job);
+    const job = await loadJob(jobsDir(), args.jobId);
+    return summarizePreview(job, await previewDiff(job));
   });
 
-  ipcMain.handle("job:run", async (event, args: { jobId: string; verifyWithHash: boolean }) => {
+  ipcMain.handle("job:run", async (event, args: { jobId: string }) => {
     if (currentRun) throw new Error("Un backup è già in corso.");
     const run = new AbortController();
     currentRun = run;
@@ -122,13 +111,9 @@ function registerIpcHandlers(): void {
     };
 
     try {
-      const job = await loadJob(userDataSubdir("jobs"), args.jobId);
-      return await runBackup(job, {
-        reportsDir: userDataSubdir("reports"),
-        verifyWithHash: args.verifyWithHash,
-        onProgress: sendProgress,
-        signal: run.signal,
-      });
+      const job = await loadJob(jobsDir(), args.jobId);
+      const report = await runBackup(job, { reportsDir: reportsDir(), onProgress: sendProgress, signal: run.signal });
+      return toReportSummary(report);
     } finally {
       currentRun = null;
     }
@@ -136,5 +121,12 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("job:cancel", () => {
     currentRun?.abort();
+  });
+
+  ipcMain.handle("history:list", () => readHistory(reportsDir(), 20));
+
+  ipcMain.handle("report:open", async (_e, args: { reportId: string }) => {
+    const error = await shell.openPath(reportTextPath(reportsDir(), args.reportId));
+    if (error) throw new Error(`Impossibile aprire il report: ${error}`);
   });
 }

@@ -1,16 +1,21 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("api", {
+  platform: process.platform,
   selectFolder: () => ipcRenderer.invoke("dialog:selectFolder"),
   listJobs: () => ipcRenderer.invoke("job:list"),
-  createJob: (args: { name: string; sourceRoot: string; defaultDestination: string }) => ipcRenderer.invoke("job:create", args),
-  setOverride: (args: { jobId: string; relativePath: string; destination: string }) => ipcRenderer.invoke("job:setOverride", args),
-  removeOverride: (args: { jobId: string; relativePath: string }) => ipcRenderer.invoke("job:removeOverride", args),
-  listSubfolders: (args: { jobId: string; relativePath: string }) => ipcRenderer.invoke("job:listSubfolders", args),
-  previewJob: (args: { jobId: string }) => ipcRenderer.invoke("job:preview", args),
-  runJob: (args: { jobId: string; verifyWithHash: boolean }) => ipcRenderer.invoke("job:run", args),
+  createJob: (args: unknown) => ipcRenderer.invoke("job:create", args),
+  updateJob: (args: unknown) => ipcRenderer.invoke("job:update", args),
+  deleteJob: (args: unknown) => ipcRenderer.invoke("job:delete", args),
+  setOverride: (args: unknown) => ipcRenderer.invoke("job:setOverride", args),
+  removeOverride: (args: unknown) => ipcRenderer.invoke("job:removeOverride", args),
+  listSubfolders: (args: unknown) => ipcRenderer.invoke("job:listSubfolders", args),
+  previewJob: (args: unknown) => ipcRenderer.invoke("job:preview", args),
+  runJob: (args: unknown) => ipcRenderer.invoke("job:run", args),
   cancelJob: () => ipcRenderer.invoke("job:cancel"),
-  onProgress: (callback: (info: { phase: string; done: number; total: number; relPath?: string }) => void) => {
+  listHistory: () => ipcRenderer.invoke("history:list"),
+  openReport: (args: unknown) => ipcRenderer.invoke("report:open", args),
+  onProgress: (callback: (info: unknown) => void) => {
     ipcRenderer.on("job:progress", (_event, info) => callback(info));
   },
 });
