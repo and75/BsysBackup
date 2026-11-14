@@ -44,6 +44,8 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             throw "La release $tag esiste già: aumenta la versione in package.json prima di rilasciare"
           }
+          # "release non trovata" è l'esito atteso: il suo codice di uscita non deve far fallire il passo
+          $global:LASTEXITCODE = 0
           "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
           Write-Host "Versione da rilasciare: $tag"
       - run: npm ci
