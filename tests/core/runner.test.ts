@@ -1,10 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createJob, setOverride } from "../../src/core/job";
 import { previewDiff, runBackup } from "../../src/core/runner";
 import type { Job } from "../../src/core/types";
+
+// Su Windows la copia passa da Robocopy vero, che ritenta per qualche secondo i file non scrivibili
+vi.setConfig({ testTimeout: 60_000 });
 
 let base: string;
 let job: Job;
@@ -36,7 +39,7 @@ afterEach(async () => {
   await rm(base, { recursive: true, force: true });
 });
 
-describe("runBackup (copia file-per-file)", () => {
+describe("runBackup (Robocopy su Windows, copia file-per-file altrove)", () => {
   it("copia ogni file nella sua destinazione mantenendo il percorso relativo", async () => {
     const report = await runBackup(job, { reportsDir });
     expect(report.totalCopied).toBe(2);
@@ -44,6 +47,25 @@ describe("runBackup (copia file-per-file)", () => {
     expect(await readFile(join(base, "dest/Documenti/fattura.txt"), "utf-8")).toBe("fattura");
     expect(await readFile(join(base, "destFoto/Foto/2024/img.jpg"), "utf-8")).toBe("foto");
     expect(await exists("dest/Foto")).toBe(false);
+  });
+
+  it("con override annidati manda ogni sottoalbero solo nella propria destinazione", async () => {
+    await put("src/Foto/2023/vecchia.jpg", "vecchia");
+    const nested = setOverride(job, "Foto/2024", join(base, "destAltro"));
+
+    const report = await runBackup(nested, { reportsDir });
+    expect(report.totalCopied).toBe(3);
+    expect(report.totalFailed).toBe(0);
+    expect(report.warnings).toEqual([]);
+    expect(await exists("dest/Documenti/fattura.txt")).toBe(true);
+    expect(await exists("destFoto/Foto/2023/vecchia.jpg")).toBe(true);
+    expect(await exists("destAltro/Foto/2024/img.jpg")).toBe(true);
+    expect(await exists("dest/Foto")).toBe(false);
+    expect(await exists("destFoto/Foto/2024")).toBe(false);
+
+    const preview = await previewDiff(nested);
+    expect(preview.planned.every((f) => f.action === "unchanged")).toBe(true);
+    expect(preview.removedFromSource).toEqual([]);
   });
 
   it("al secondo giro non trova nulla da copiare", async () => {

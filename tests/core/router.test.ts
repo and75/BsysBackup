@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveDestinationRoot, resolveRegionPath, buildRegions, computeExcludeRelPaths, planRegionCopies } from "../../src/core/router";
 import { robocopyArgs } from "../../src/core/copier";
 import { setOverride } from "../../src/core/job";
+import { join } from "node:path";
 import type { Job } from "../../src/core/types";
 
 function job(overrides: Job["overrides"]): Job {
@@ -71,8 +72,14 @@ describe("planRegionCopies (coppie sorgente → destinazione per Robocopy)", () 
     const j = job([{ relativePath: "Foto/2024", destination: "/fotoDest" }]);
     const plans = planRegionCopies(j);
     expect(plans).toEqual([
-      { relativePath: "", destinationRoot: "/default", sourceDir: "/src", destDir: "/default", excludeDirs: ["/src/Foto/2024"] },
-      { relativePath: "Foto/2024", destinationRoot: "/fotoDest", sourceDir: "/src/Foto/2024", destDir: "/fotoDest/Foto/2024", excludeDirs: [] },
+      { relativePath: "", destinationRoot: "/default", sourceDir: "/src", destDir: "/default", excludeDirs: [join("/src", "Foto", "2024")] },
+      {
+        relativePath: "Foto/2024",
+        destinationRoot: "/fotoDest",
+        sourceDir: join("/src", "Foto", "2024"),
+        destDir: join("/fotoDest", "Foto", "2024"),
+        excludeDirs: [],
+      },
     ]);
   });
 
