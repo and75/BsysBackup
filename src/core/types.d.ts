@@ -61,4 +61,13 @@ export interface BackupReport {
   totalSkippedUnreachable: number;
   removedFromSource: PlannedFile[];
   destinations: DestinationGroupReport[];
+  /** Problemi non bloccanti: cartelle non leggibili, errori segnalati da Robocopy, ecc. */
+  warnings: string[];
+}
+
+export interface PreviewResult {
+  planned: PlannedFile[];
+  removedFromSource: PlannedFile[];
+  unreachableDestinations: string[];
+  warnings: string[];
 }

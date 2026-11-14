@@ -1,52 +1,82 @@
 import { readdir, stat } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { join, parse, relative, resolve, sep } from "node:path";
 import type { FileEntry } from "./types";
+
+/** Suffisso dei file temporanei scritti dal copiatore: mai trattati come contenuto */
+export const PARTIAL_SUFFIX = ".bsys-partial";
+
+/** Cartelle di sistema di Windows presenti nella radice dei dischi, sempre non leggibili */
+export const SYSTEM_DIRS = ["System Volume Information", "$RECYCLE.BIN"];
+
+export interface ScanResult {
+  entries: FileEntry[];
+  /** Cartelle o file che non è stato possibile leggere (permessi, file spariti durante la scansione) */
+  skipped: string[];
+}
 
 function toRelKey(root: string, abs: string): string {
   return relative(root, abs).split(sep).join("/");
 }
 
-/**
- * Attraversa ricorsivamente `root` e produce la lista dei file (no cartelle).
- * Usa withFileTypes per evitare una stat() separata per ogni voce durante il walk.
- */
-export async function scanDirectory(root: string): Promise<FileEntry[]> {
-  const entries: FileEntry[] = [];
+function describe(err: unknown): string {
+  const e = err as NodeJS.ErrnoException;
+  return e?.code ?? String(e?.message ?? err);
+}
 
-  async function walk(dir: string): Promise<void> {
+/**
+ * Attraversa ricorsivamente `root` e produce la lista dei file (no cartelle, no link).
+ * Un errore sulla radice viene propagato; una sottocartella o un file non leggibile
+ * viene saltato e riportato in `skipped`, senza interrompere la scansione.
+ */
+export async function scanDirectory(root: string): Promise<ScanResult> {
+  const entries: FileEntry[] = [];
+  const skipped: string[] = [];
+
+  async function walk(dir: string, isRoot: boolean): Promise<void> {
     let items;
     try {
       items = await readdir(dir, { withFileTypes: true });
-    } catch (err: any) {
-      if (err?.code === "ENOENT") return;
-      throw err;
+    } catch (err) {
+      if (isRoot) throw err;
+      skipped.push(`${dir} (${describe(err)})`);
+      return;
     }
 
     for (const item of items) {
       const abs = join(dir, item.name);
       if (item.isDirectory()) {
-        await walk(abs);
+        if (SYSTEM_DIRS.includes(item.name)) continue;
+        await walk(abs, false);
       } else if (item.isFile()) {
-        const s = await stat(abs);
-        entries.push({
-          relPath: toRelKey(root, abs),
-          size: s.size,
-          mtimeMs: s.mtimeMs,
-        });
+        if (item.name.endsWith(PARTIAL_SUFFIX)) continue;
+        try {
+          const s = await stat(abs);
+          entries.push({ relPath: toRelKey(root, abs), size: s.size, mtimeMs: s.mtimeMs });
+        } catch (err) {
+          skipped.push(`${abs} (${describe(err)})`);
+        }
       }
-      // symlink e altri tipi: ignorati deliberatamente per semplicità/sicurezza
     }
   }
 
-  await walk(root);
-  return entries;
+  await walk(root, true);
+  return { entries, skipped };
 }
 
-export async function pathReachable(path: string): Promise<boolean> {
+export async function pathExists(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * true se la cartella esiste oppure può essere creata, cioè se esiste almeno la radice
+ * del suo disco. Un disco esterno scollegato (es. E:\ assente) risulta non raggiungibile.
+ */
+export async function isReachable(path: string): Promise<boolean> {
+  if (await pathExists(path)) return true;
+  return pathExists(parse(resolve(path)).root);
 }

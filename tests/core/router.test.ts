@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { resolveDestinationRoot, buildRegions, computeExcludeRelPaths } from "../../src/core/router";
+import { resolveDestinationRoot, resolveRegionPath, buildRegions, computeExcludeRelPaths, planRegionCopies } from "../../src/core/router";
+import { robocopyArgs } from "../../src/core/copier";
+import { setOverride } from "../../src/core/job";
 import type { Job } from "../../src/core/types";
 
 function job(overrides: Job["overrides"]): Job {
@@ -61,5 +63,40 @@ describe("buildRegions / computeExcludeRelPaths", () => {
     const regions = buildRegions(j);
     const fotoRegion = regions.find((r) => r.relativePath === "Foto")!;
     expect(computeExcludeRelPaths(regions, fotoRegion)).toEqual(["Foto/2024"]);
+  });
+});
+
+describe("planRegionCopies (coppie sorgente → destinazione per Robocopy)", () => {
+  it("mantiene il percorso relativo dentro la destinazione dell'override, come differ e verifier", () => {
+    const j = job([{ relativePath: "Foto/2024", destination: "/fotoDest" }]);
+    const plans = planRegionCopies(j);
+    expect(plans).toEqual([
+      { relativePath: "", destinationRoot: "/default", sourceDir: "/src", destDir: "/default", excludeDirs: ["/src/Foto/2024"] },
+      { relativePath: "Foto/2024", destinationRoot: "/fotoDest", sourceDir: "/src/Foto/2024", destDir: "/fotoDest/Foto/2024", excludeDirs: [] },
+    ]);
+  });
+
+  it("assegna ogni file alla regione dell'override più specifico", () => {
+    const j = job([
+      { relativePath: "Foto", destination: "/fotoDest" },
+      { relativePath: "Foto/2024", destination: "/altraDest" },
+    ]);
+    expect(resolveRegionPath(j, "Documenti/a.txt")).toBe("");
+    expect(resolveRegionPath(j, "Foto/2023/a.jpg")).toBe("Foto");
+    expect(resolveRegionPath(j, "Foto/2024/a.jpg")).toBe("Foto/2024");
+  });
+
+  it("passa a Robocopy la tolleranza FAT e le cartelle da escludere", () => {
+    const args = robocopyArgs("C:\\src", "E:\\dest", ["C:\\src\\Foto"]);
+    expect(args.slice(0, 2)).toEqual(["C:\\src", "E:\\dest"]);
+    expect(args).toContain("/FFT");
+    expect(args.slice(args.indexOf("/XD") + 1)).toEqual(["System Volume Information", "$RECYCLE.BIN", "C:\\src\\Foto"]);
+  });
+});
+
+describe("setOverride", () => {
+  it("rifiuta un override sulla cartella principale", () => {
+    expect(() => setOverride(job([]), "", "/x")).toThrow();
+    expect(() => setOverride(job([]), "/", "/x")).toThrow();
   });
 });

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { createJob, loadJob, removeOverride, saveJob, setOverride } from "../core/job";
 import { previewDiff, runBackup } from "../core/runner";
+import { toAbs } from "../core/router";
 import type { Job } from "../core/types";
 
 function userDataSubdir(name: string): string {
@@ -86,9 +87,8 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("job:listSubfolders", async (_e, args: { jobId: string; relativePath: string }) => {
     const job = await loadJob(userDataSubdir("jobs"), args.jobId);
-    const abs = args.relativePath ? join(job.sourceRoot, ...args.relativePath.split("/")) : job.sourceRoot;
     try {
-      const entries = await readdir(abs, { withFileTypes: true });
+      const entries = await readdir(toAbs(job.sourceRoot, args.relativePath), { withFileTypes: true });
       return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
     } catch {
       return [];
@@ -100,11 +100,19 @@ function registerIpcHandlers(): void {
     return previewDiff(job);
   });
 
-  ipcMain.handle("job:run", async (event, args: { jobId: string }) => {
-    const job = await loadJob(userDataSubdir("jobs"), args.jobId);
-    return runBackup(job, {
-      reportsDir: userDataSubdir("reports"),
-      onProgress: (info) => event.sender.send("job:progress", info),
-    });
+  let backupRunning = false;
+  ipcMain.handle("job:run", async (event, args: { jobId: string; verifyWithHash: boolean }) => {
+    if (backupRunning) throw new Error("Un backup è già in corso.");
+    backupRunning = true;
+    try {
+      const job = await loadJob(userDataSubdir("jobs"), args.jobId);
+      return await runBackup(job, {
+        reportsDir: userDataSubdir("reports"),
+        verifyWithHash: args.verifyWithHash,
+        onProgress: (info) => event.sender.send("job:progress", info),
+      });
+    } finally {
+      backupRunning = false;
+    }
   });
 }

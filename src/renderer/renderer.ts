@@ -3,6 +3,7 @@ import type { Job } from "../core/types";
 
 let currentJob: Job | null = null;
 let selectedRelPath: string | null = null;
+let treeRenderToken = 0;
 const expandedPaths = new Set<string>([""]);
 const childrenCache = new Map<string, string[]>();
 
@@ -19,6 +20,10 @@ const removeOverrideBtn = $<HTMLButtonElement>("removeOverrideBtn");
 const overridesList = $<HTMLUListElement>("overridesList");
 const overridesSection = $<HTMLElement>("overridesSection");
 const actionsSection = $<HTMLElement>("actionsSection");
+const verifyWithHashInput = $<HTMLInputElement>("verifyWithHash");
+const previewBtn = $<HTMLButtonElement>("previewBtn");
+const runBtn = $<HTMLButtonElement>("runBtn");
+const progressEl = $<HTMLDivElement>("progress");
 const logEl = $<HTMLDivElement>("log");
 
 function log(text: string): void {
@@ -26,44 +31,64 @@ function log(text: string): void {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-function renderOverrides(): void {
-  overridesList.innerHTML = "";
-  if (!currentJob) return;
-  for (const ov of currentJob.overrides) {
-    const li = document.createElement("li");
-    li.innerHTML = `<span>${ov.relativePath || "(sorgente principale)"} → ${ov.destination}</span>`;
-    const removeBtn = document.createElement("button");
-    removeBtn.className = "secondary";
-    removeBtn.textContent = "Rimuovi";
-    removeBtn.onclick = async () => {
-      if (!currentJob) return;
-      currentJob = await window.api.removeOverride({ jobId: currentJob.id, relativePath: ov.relativePath });
-      renderOverrides();
-      await renderTree();
-      updateSelectionState();
-    };
-    li.appendChild(removeBtn);
-    overridesList.appendChild(li);
-  }
+/** Collega un handler asincrono a un click mostrando nel log gli errori invece di perderli */
+function onClick(el: HTMLElement, handler: () => Promise<void>): void {
+  el.addEventListener("click", () => {
+    handler().catch((err) => log(`ERRORE: ${err instanceof Error ? err.message : String(err)}`));
+  });
+}
+
+function setBusy(busy: boolean): void {
+  previewBtn.disabled = busy;
+  runBtn.disabled = busy;
 }
 
 function findOverrideFor(relPath: string) {
   return currentJob?.overrides.find((o) => o.relativePath === relPath);
 }
 
+async function applyJobUpdate(job: Job): Promise<void> {
+  currentJob = job;
+  renderOverrides();
+  updateSelectionState();
+  await renderTree();
+}
+
+function renderOverrides(): void {
+  overridesList.replaceChildren();
+  if (!currentJob) return;
+  for (const ov of currentJob.overrides) {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    text.textContent = `${ov.relativePath} → ${ov.destination}`;
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "secondary";
+    removeBtn.textContent = "Rimuovi";
+    onClick(removeBtn, async () => {
+      if (!currentJob) return;
+      await applyJobUpdate(await window.api.removeOverride({ jobId: currentJob.id, relativePath: ov.relativePath }));
+    });
+    li.append(text, removeBtn);
+    overridesList.appendChild(li);
+  }
+}
+
 function updateSelectionState(): void {
-  const hasSelection = selectedRelPath !== null;
-  assignOverrideBtn.disabled = !hasSelection;
-  removeOverrideBtn.disabled = !hasSelection || !findOverrideFor(selectedRelPath ?? "");
-  selectedPathLabel.textContent = hasSelection
-    ? `Selezionata: ${selectedRelPath === "" ? "(cartella sorgente principale)" : selectedRelPath}`
-    : "Nessuna sottocartella selezionata";
+  const isSubfolder = selectedRelPath !== null && selectedRelPath !== "";
+  assignOverrideBtn.disabled = !isSubfolder;
+  removeOverrideBtn.disabled = !isSubfolder || !findOverrideFor(selectedRelPath as string);
+  if (selectedRelPath === null) selectedPathLabel.textContent = "Nessuna sottocartella selezionata";
+  else if (selectedRelPath === "") selectedPathLabel.textContent = "Cartella principale: usa la destinazione di default del job";
+  else selectedPathLabel.textContent = `Selezionata: ${selectedRelPath}`;
 }
 
 async function loadChildren(relPath: string): Promise<string[]> {
-  if (childrenCache.has(relPath)) return childrenCache.get(relPath) as string[];
+  const cached = childrenCache.get(relPath);
+  if (cached) return cached;
   if (!currentJob) return [];
-  const children = await window.api.listSubfolders({ jobId: currentJob.id, relativePath: relPath });
+  const jobId = currentJob.id;
+  const children = await window.api.listSubfolders({ jobId, relativePath: relPath });
+  if (currentJob?.id !== jobId) return [];
   childrenCache.set(relPath, children);
   return children;
 }
@@ -76,25 +101,21 @@ async function buildTreeNode(relPath: string, label: string): Promise<HTMLLIElem
   const toggle = document.createElement("span");
   toggle.className = "tree-toggle";
   toggle.textContent = expandedPaths.has(relPath) ? "▾" : "▸";
-  toggle.onclick = async (ev) => {
-    ev.stopPropagation();
+  onClick(toggle, async () => {
     if (expandedPaths.has(relPath)) expandedPaths.delete(relPath);
-    else {
-      expandedPaths.add(relPath);
-      await loadChildren(relPath);
-    }
+    else expandedPaths.add(relPath);
     await renderTree();
-  };
+  });
   row.appendChild(toggle);
 
   const name = document.createElement("span");
   name.className = "tree-name";
   name.textContent = label;
-  name.onclick = async () => {
+  onClick(name, async () => {
     selectedRelPath = relPath;
     updateSelectionState();
     await renderTree();
-  };
+  });
   row.appendChild(name);
 
   const override = findOverrideFor(relPath);
@@ -123,29 +144,35 @@ async function buildTreeNode(relPath: string, label: string): Promise<HTMLLIElem
   return li;
 }
 
+/** Costruisce l'albero fuori dal DOM e lo sostituisce in un colpo solo; un render superato da uno più recente viene scartato */
 async function renderTree(): Promise<void> {
-  sourceTreeEl.innerHTML = "";
-  if (!currentJob) return;
-  sourceTreeEl.appendChild(await buildTreeNode("", currentJob.sourceRoot));
+  const token = ++treeRenderToken;
+  if (!currentJob) {
+    sourceTreeEl.replaceChildren();
+    return;
+  }
+  const root = await buildTreeNode("", currentJob.sourceRoot);
+  if (token === treeRenderToken) sourceTreeEl.replaceChildren(root);
 }
 
-function selectJob(job: Job): void {
-  currentJob = job;
+async function selectJob(job: Job): Promise<void> {
   overridesSection.style.display = "block";
   actionsSection.style.display = "block";
   selectedRelPath = null;
   expandedPaths.clear();
   expandedPaths.add("");
   childrenCache.clear();
-  renderOverrides();
-  updateSelectionState();
-  void renderTree();
+  verifyWithHashInput.checked = job.verifyWithHash;
   log(`Job selezionato: ${job.name}`);
+  await applyJobUpdate(job);
 }
 
-async function refreshJobSelect(selectId?: string): Promise<void> {
+async function refreshJobSelect(selectId?: string): Promise<Job[]> {
   const jobs = await window.api.listJobs();
-  jobSelect.innerHTML = '<option value="">— nessuno —</option>';
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "— nessuno —";
+  jobSelect.replaceChildren(placeholder);
   for (const job of jobs) {
     const opt = document.createElement("option");
     opt.value = job.id;
@@ -153,26 +180,30 @@ async function refreshJobSelect(selectId?: string): Promise<void> {
     jobSelect.appendChild(opt);
   }
   if (selectId) jobSelect.value = selectId;
+  return jobs;
 }
 
-jobSelect.addEventListener("change", async () => {
-  if (!jobSelect.value) return;
-  const jobs = await window.api.listJobs();
-  const job = jobs.find((j) => j.id === jobSelect.value);
-  if (job) selectJob(job);
-});
-
-$("pickSource").addEventListener("click", async () => {
+async function pickFolderInto(input: HTMLInputElement): Promise<void> {
   const folder = await window.api.selectFolder();
-  if (folder) sourceRootInput.value = folder;
+  if (folder) input.value = folder;
+}
+
+jobSelect.addEventListener("change", () => {
+  const jobId = jobSelect.value;
+  if (!jobId) return;
+  window.api
+    .listJobs()
+    .then((jobs) => {
+      const job = jobs.find((j) => j.id === jobId);
+      if (job) return selectJob(job);
+    })
+    .catch((err) => log(`ERRORE: ${err instanceof Error ? err.message : String(err)}`));
 });
 
-$("pickDest").addEventListener("click", async () => {
-  const folder = await window.api.selectFolder();
-  if (folder) defaultDestinationInput.value = folder;
-});
+onClick($("pickSource"), () => pickFolderInto(sourceRootInput));
+onClick($("pickDest"), () => pickFolderInto(defaultDestinationInput));
 
-$("createJobBtn").addEventListener("click", async () => {
+onClick($("createJobBtn"), async () => {
   if (!jobNameInput.value || !sourceRootInput.value || !defaultDestinationInput.value) {
     log("Compila nome, sorgente e destinazione di default prima di creare il job.");
     return;
@@ -183,55 +214,75 @@ $("createJobBtn").addEventListener("click", async () => {
     defaultDestination: defaultDestinationInput.value,
   });
   await refreshJobSelect(job.id);
-  selectJob(job);
+  await selectJob(job);
 });
 
-assignOverrideBtn.addEventListener("click", async () => {
-  if (!currentJob || selectedRelPath === null) return;
+onClick(assignOverrideBtn, async () => {
+  if (!currentJob || !selectedRelPath) return;
+  const relativePath = selectedRelPath;
   const folder = await window.api.selectFolder();
   if (!folder) return;
-  currentJob = await window.api.setOverride({ jobId: currentJob.id, relativePath: selectedRelPath, destination: folder });
-  renderOverrides();
-  updateSelectionState();
-  await renderTree();
+  await applyJobUpdate(await window.api.setOverride({ jobId: currentJob.id, relativePath, destination: folder }));
 });
 
-removeOverrideBtn.addEventListener("click", async () => {
-  if (!currentJob || selectedRelPath === null) return;
-  currentJob = await window.api.removeOverride({ jobId: currentJob.id, relativePath: selectedRelPath });
-  renderOverrides();
-  updateSelectionState();
-  await renderTree();
+onClick(removeOverrideBtn, async () => {
+  if (!currentJob || !selectedRelPath) return;
+  await applyJobUpdate(await window.api.removeOverride({ jobId: currentJob.id, relativePath: selectedRelPath }));
 });
 
-$("previewBtn").addEventListener("click", async () => {
+function logWarnings(warnings: string[]): void {
+  if (warnings.length === 0) return;
+  log(`Avvisi (${warnings.length}):`);
+  for (const w of warnings.slice(0, 50)) log(`  ${w}`);
+  if (warnings.length > 50) log(`  … e altri ${warnings.length - 50}`);
+}
+
+onClick(previewBtn, async () => {
   if (!currentJob) return;
   logEl.textContent = "";
+  progressEl.textContent = "";
   log("Analisi in corso…");
-  const preview = await window.api.previewJob({ jobId: currentJob.id });
-  const changed = preview.planned.filter((f) => f.action !== "unchanged");
-  log(`Nuovi/modificati: ${changed.length}  Invariati: ${preview.planned.length - changed.length}  Rimossi dalla sorgente: ${preview.removedFromSource.length}`);
-  if (preview.unreachableDestinations.length > 0) {
-    log(`ATTENZIONE — destinazioni non raggiungibili: ${preview.unreachableDestinations.join(", ")}`);
-  }
-  for (const f of changed.slice(0, 200)) {
-    log(`  [${f.action}] ${f.relPath} → ${f.destinationRoot}`);
+  setBusy(true);
+  try {
+    const preview = await window.api.previewJob({ jobId: currentJob.id });
+    const changed = preview.planned.filter((f) => f.action !== "unchanged");
+    log(`Nuovi/modificati: ${changed.length}  Invariati: ${preview.planned.length - changed.length}  Rimossi dalla sorgente: ${preview.removedFromSource.length}`);
+    if (preview.unreachableDestinations.length > 0) {
+      log(`ATTENZIONE — destinazioni non raggiungibili: ${preview.unreachableDestinations.join(", ")}`);
+    }
+    logWarnings(preview.warnings);
+    for (const f of changed.slice(0, 200)) log(`  [${f.action}] ${f.relPath} → ${f.destinationRoot}`);
+    if (changed.length > 200) log(`  … e altri ${changed.length - 200}`);
+  } finally {
+    setBusy(false);
   }
 });
 
-$("runBtn").addEventListener("click", async () => {
+onClick(runBtn, async () => {
   if (!currentJob) return;
   logEl.textContent = "";
+  progressEl.textContent = "";
   log("Backup in corso…");
-  const report = await window.api.runJob({ jobId: currentJob.id });
-  log(`Copiati: ${report.totalCopied}  Falliti: ${report.totalFailed}  Saltati (destinazione irraggiungibile): ${report.totalSkippedUnreachable}`);
-  for (const dest of report.destinations) {
-    for (const f of dest.failed) log(`  FALLITO: ${f.relPath} — ${f.error}`);
+  setBusy(true);
+  try {
+    const report = await window.api.runJob({ jobId: currentJob.id, verifyWithHash: verifyWithHashInput.checked });
+    progressEl.textContent = "";
+    log(`Copiati e controllati: ${report.totalCopied}  Falliti: ${report.totalFailed}  Saltati (destinazione non raggiungibile): ${report.totalSkippedUnreachable}`);
+    for (const dest of report.destinations) {
+      if (!dest.reachable) log(`ATTENZIONE — destinazione non raggiungibile: ${dest.destinationRoot}`);
+      for (const f of dest.failed) log(`  FALLITO: ${f.relPath} — ${f.error}`);
+    }
+    logWarnings(report.warnings);
+    if (report.removedFromSource.length > 0) {
+      log(`In destinazione ma non più nella sorgente (non cancellati): ${report.removedFromSource.length}`);
+    }
+  } finally {
+    setBusy(false);
   }
 });
 
 window.api.onProgress((info) => {
-  log(`  (${info.done}/${info.total}) ${info.relPath}`);
+  progressEl.textContent = `Verifica ${info.done}/${info.total}: ${info.relPath}`;
 });
 
-refreshJobSelect();
+refreshJobSelect().catch((err) => log(`ERRORE: ${err instanceof Error ? err.message : String(err)}`));

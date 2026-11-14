@@ -1,53 +1,71 @@
-import { join } from "node:path";
-import type { BackupReport, CopyResult, DestinationGroupReport, Job, PlannedFile } from "./types";
-import { scanDirectory } from "./scanner";
-import { listDestinationRoots, buildRegions, computeExcludeRelPaths } from "./router";
+import type { BackupReport, CopyResult, DestinationGroupReport, FileEntry, Job, PlannedFile, PreviewResult } from "./types";
+import { isReachable, pathExists, scanDirectory } from "./scanner";
+import { listDestinationRoots, planRegionCopies, resolveRegionPath } from "./router";
 import { buildDiff } from "./differ";
-import { ensureDir, runRobocopy, copyPlannedFiles, isWindows } from "./copier";
+import { copyPlannedFiles, ensureDir, isWindows, runRobocopy } from "./copier";
 import { verifyCopiedFile } from "./verifier";
 import { writeReportToDisk } from "./report";
 
-export interface PreviewResult {
-  planned: PlannedFile[];
-  removedFromSource: PlannedFile[];
-  unreachableDestinations: string[];
-}
-
-/** Scansiona sorgente e destinazioni e calcola il diff, senza copiare nulla. Usato per l'anteprima in UI. */
+/**
+ * Scansiona sorgente e destinazioni e calcola il diff, senza copiare né creare nulla.
+ * Fallisce se la sorgente non è leggibile: trattarla come vuota farebbe sembrare
+ * "rimossi" tutti i file già presenti nel backup.
+ */
 export async function previewDiff(job: Job): Promise<PreviewResult> {
-  const sourceEntries = await scanDirectory(job.sourceRoot);
-  const destRoots = listDestinationRoots(job);
+  const warnings: string[] = [];
 
-  const destEntriesByRoot = new Map<string, Awaited<ReturnType<typeof scanDirectory>>>();
+  let source;
+  try {
+    source = await scanDirectory(job.sourceRoot);
+  } catch (err) {
+    throw new Error(`Sorgente non leggibile: ${job.sourceRoot} (${(err as Error).message})`);
+  }
+  for (const s of source.skipped) warnings.push(`Sorgente, non letto: ${s}`);
+
+  const destEntriesByRoot = new Map<string, FileEntry[]>();
   const unreachableDestinations: string[] = [];
 
-  for (const root of destRoots) {
-    const reachable = await ensureDir(root);
-    if (!reachable) {
+  for (const root of listDestinationRoots(job)) {
+    if (!(await isReachable(root))) {
       unreachableDestinations.push(root);
       destEntriesByRoot.set(root, []);
       continue;
     }
-    destEntriesByRoot.set(root, await scanDirectory(root));
+    if (!(await pathExists(root))) {
+      destEntriesByRoot.set(root, []);
+      continue;
+    }
+    try {
+      const dest = await scanDirectory(root);
+      destEntriesByRoot.set(root, dest.entries);
+      for (const s of dest.skipped) warnings.push(`Destinazione, non letto: ${s}`);
+    } catch {
+      unreachableDestinations.push(root);
+      destEntriesByRoot.set(root, []);
+    }
   }
 
-  const { planned, removedFromSource } = buildDiff(job, sourceEntries, destEntriesByRoot);
-  return { planned, removedFromSource, unreachableDestinations };
+  const { planned, removedFromSource } = buildDiff(job, source.entries, destEntriesByRoot);
+  return { planned, removedFromSource, unreachableDestinations, warnings };
 }
 
 export interface RunBackupOptions {
   reportsDir: string;
-  /** Concorrenza usata solo nel fallback non-Windows */
+  /** Se indicato, prevale sull'impostazione del job */
+  verifyWithHash?: boolean;
+  /** Concorrenza della copia file-per-file (non usata con Robocopy) */
   concurrency?: number;
   onProgress?: (info: { relPath: string; done: number; total: number }) => void;
 }
 
 export async function runBackup(job: Job, opts: RunBackupOptions): Promise<BackupReport> {
   const startedAt = new Date().toISOString();
-  const { planned, removedFromSource, unreachableDestinations } = await previewDiff(job);
+  const useHash = opts.verifyWithHash ?? job.verifyWithHash;
 
-  const toCopy = planned.filter((f) => f.action === "new" || f.action === "modified");
-  const unreachableSet = new Set(unreachableDestinations);
+  const preview = await previewDiff(job);
+  const warnings = [...preview.warnings];
+  const toCopy = preview.planned.filter((f) => f.action === "new" || f.action === "modified");
+  const unreachable = new Set(preview.unreachableDestinations);
 
   const byDestination = new Map<string, PlannedFile[]>();
   for (const f of toCopy) {
@@ -56,72 +74,72 @@ export async function runBackup(job: Job, opts: RunBackupOptions): Promise<Backu
     byDestination.set(f.destinationRoot, list);
   }
 
-  const destinationRoots = listDestinationRoots(job);
+  for (const root of byDestination.keys()) {
+    if (!unreachable.has(root) && !(await ensureDir(root))) unreachable.add(root);
+  }
+
   const destReports = new Map<string, DestinationGroupReport>();
-  for (const root of destinationRoots) {
+  for (const root of listDestinationRoots(job)) {
+    const reachable = !unreachable.has(root);
     destReports.set(root, {
       destinationRoot: root,
-      reachable: !unreachableSet.has(root),
+      reachable,
       copied: [],
       failed: [],
-      skippedUnreachable: [],
+      skippedUnreachable: reachable ? [] : byDestination.get(root) ?? [],
     });
   }
 
-  for (const [root, files] of byDestination) {
-    const report = destReports.get(root);
-    if (report && !report.reachable) {
-      report.skippedUnreachable.push(...files);
-    }
-  }
+  const copyable = toCopy.filter((f) => !unreachable.has(f.destinationRoot));
+  const copyErrors = new Map<string, string>();
+  const sourceHashes = new Map<string, string>();
 
-  // Fase di copia fisica, solo per le destinazioni raggiungibili.
   if (isWindows) {
-    const regions = buildRegions(job);
-    for (const region of regions) {
-      const report = destReports.get(region.destination);
-      if (!report || !report.reachable) continue;
-      const sourceSub = region.relativePath ? join(job.sourceRoot, ...region.relativePath.split("/")) : job.sourceRoot;
-      const excludeAbs = computeExcludeRelPaths(regions, region).map((rel) => join(job.sourceRoot, ...rel.split("/")));
-      await runRobocopy(sourceSub, region.destination, excludeAbs);
+    const regionsWithWork = new Set(copyable.map((f) => resolveRegionPath(job, f.relPath)));
+    for (const region of planRegionCopies(job)) {
+      if (!regionsWithWork.has(region.relativePath)) continue;
+      const result = await runRobocopy(region.sourceDir, region.destDir, region.excludeDirs);
+      if (!result.ok) {
+        warnings.push(`Robocopy ha segnalato errori (codice ${result.exitCode ?? "n/d"}) copiando ${region.sourceDir} in ${region.destDir}`);
+      }
     }
   } else {
     for (const [root, files] of byDestination) {
-      const report = destReports.get(root);
-      if (!report || !report.reachable) continue;
-      await copyPlannedFiles(files, { concurrency: opts.concurrency ?? 4, computeHash: job.verifyWithHash });
+      if (unreachable.has(root)) continue;
+      const outcomes = await copyPlannedFiles(files, { concurrency: opts.concurrency ?? 4, computeHash: useHash });
+      for (const [relPath, outcome] of outcomes) {
+        if (!outcome.ok) copyErrors.set(relPath, outcome.error ?? "copia non riuscita");
+        else if (outcome.sourceHash) sourceHashes.set(relPath, outcome.sourceHash);
+      }
     }
   }
 
-  // Fase di verifica: sempre eseguita sui file delle destinazioni raggiungibili, indipendentemente
-  // da come sono stati fisicamente copiati (Robocopy o fallback) — è la garanzia che chiedevi.
+  // La verifica legge la destinazione dopo la copia, chiunque l'abbia eseguita: è ciò che
+  // distingue "copiato" da "il copiatore non ha dato errori".
   let done = 0;
-  const total = toCopy.filter((f) => !unreachableSet.has(f.destinationRoot)).length;
-  for (const [root, files] of byDestination) {
-    const report = destReports.get(root);
-    if (!report || !report.reachable) continue;
-    for (const file of files) {
-      const result: CopyResult = await verifyCopiedFile(file, { useHash: job.verifyWithHash });
-      if (result.ok) report.copied.push(result);
-      else report.failed.push(result);
-      done++;
-      opts.onProgress?.({ relPath: file.relPath, done, total });
-    }
+  for (const file of copyable) {
+    const report = destReports.get(file.destinationRoot) as DestinationGroupReport;
+    const copyError = copyErrors.get(file.relPath);
+    const result: CopyResult = copyError
+      ? { relPath: file.relPath, destPath: file.destPath, ok: false, verified: false, error: copyError }
+      : await verifyCopiedFile(file, { useHash, knownSourceHash: sourceHashes.get(file.relPath) });
+    (result.ok ? report.copied : report.failed).push(result);
+    opts.onProgress?.({ relPath: file.relPath, done: ++done, total: copyable.length });
   }
 
-  const finishedAt = new Date().toISOString();
   const destinations = Array.from(destReports.values());
   const report: BackupReport = {
     jobId: job.id,
     jobName: job.name,
     startedAt,
-    finishedAt,
+    finishedAt: new Date().toISOString(),
     totalPlanned: toCopy.length,
     totalCopied: destinations.reduce((n, d) => n + d.copied.length, 0),
     totalFailed: destinations.reduce((n, d) => n + d.failed.length, 0),
     totalSkippedUnreachable: destinations.reduce((n, d) => n + d.skippedUnreachable.length, 0),
-    removedFromSource,
+    removedFromSource: preview.removedFromSource,
     destinations,
+    warnings,
   };
 
   await writeReportToDisk(opts.reportsDir, report);

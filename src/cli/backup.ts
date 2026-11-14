@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { createJob, setOverride } from "../core/job";
 import { previewDiff, runBackup } from "../core/runner";
+import { summarizeReport } from "../core/report";
 
 /**
  * Uso: node dist/cli/backup.js <source> <destinationDefault> [--override rel=dest ...] [--run] [--hash]
@@ -35,6 +36,7 @@ async function main() {
     if (preview.unreachableDestinations.length > 0) {
       console.log(`Destinazioni non raggiungibili: ${preview.unreachableDestinations.join(", ")}`);
     }
+    for (const w of preview.warnings) console.log(`Avviso: ${w}`);
     for (const f of preview.planned.filter((f) => f.action !== "unchanged")) {
       console.log(`  [${f.action}] ${f.relPath} -> ${f.destinationRoot}`);
     }
@@ -42,7 +44,8 @@ async function main() {
   }
 
   const report = await runBackup(job, { reportsDir: join(process.cwd(), "jobs", "reports") });
-  console.log(`Copiati: ${report.totalCopied}  Falliti: ${report.totalFailed}  Saltati (dest. irraggiungibile): ${report.totalSkippedUnreachable}`);
+  console.log(summarizeReport(report));
+  if (report.totalFailed > 0 || report.totalSkippedUnreachable > 0) process.exitCode = 2;
 }
 
 main().catch((err) => {

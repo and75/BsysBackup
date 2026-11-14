@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld("api", {
   removeOverride: (args: { jobId: string; relativePath: string }) => ipcRenderer.invoke("job:removeOverride", args),
   listSubfolders: (args: { jobId: string; relativePath: string }) => ipcRenderer.invoke("job:listSubfolders", args),
   previewJob: (args: { jobId: string }) => ipcRenderer.invoke("job:preview", args),
-  runJob: (args: { jobId: string }) => ipcRenderer.invoke("job:run", args),
+  runJob: (args: { jobId: string; verifyWithHash: boolean }) => ipcRenderer.invoke("job:run", args),
   onProgress: (callback: (info: { relPath: string; done: number; total: number }) => void) => {
     ipcRenderer.on("job:progress", (_event, info) => callback(info));
   },

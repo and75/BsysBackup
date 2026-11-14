@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Job, Override } from "./types";
+import { normalizeRelPath } from "./router";
 
 export function createJob(input: { name: string; sourceRoot: string; defaultDestination: string; verifyWithHash?: boolean }): Job {
   return {
@@ -15,14 +16,17 @@ export function createJob(input: { name: string; sourceRoot: string; defaultDest
 }
 
 export function setOverride(job: Job, relativePath: string, destination: string): Job {
-  const normalized = relativePath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalized = normalizeRelPath(relativePath);
+  if (normalized === "") {
+    throw new Error("La cartella principale usa la destinazione di default: l'override vale solo per le sottocartelle.");
+  }
   const overrides: Override[] = job.overrides.filter((o) => o.relativePath !== normalized);
   overrides.push({ relativePath: normalized, destination });
   return { ...job, overrides };
 }
 
 export function removeOverride(job: Job, relativePath: string): Job {
-  const normalized = relativePath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalized = normalizeRelPath(relativePath);
   return { ...job, overrides: job.overrides.filter((o) => o.relativePath !== normalized) };
 }
 

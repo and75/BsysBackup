@@ -1,16 +1,11 @@
-import { join } from "node:path";
 import type { FileEntry, Job, PlannedFile } from "./types";
-import { resolveDestinationRoot } from "./router";
+import { resolveDestinationRoot, toAbs } from "./router";
 
 export interface DiffResult {
   /** File da copiare (nuovi o modificati) o già uguali (unchanged, utile per il report) */
   planned: PlannedFile[];
   /** File presenti in una destinazione ma non più nella sorgente (solo per la parte di albero di competenza di quella destinazione) */
   removedFromSource: PlannedFile[];
-}
-
-function toAbs(root: string, relPath: string): string {
-  return join(root, ...relPath.split("/"));
 }
 
 /**
@@ -21,7 +16,7 @@ function toAbs(root: string, relPath: string): string {
  */
 const MTIME_TOLERANCE_MS = 2000;
 
-function mtimeDiffers(a: number, b: number): boolean {
+export function mtimeDiffers(a: number, b: number): boolean {
   return Math.abs(a - b) > MTIME_TOLERANCE_MS;
 }
 

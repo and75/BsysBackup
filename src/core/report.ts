@@ -12,16 +12,22 @@ export function summarizeReport(report: BackupReport): string {
       lines.push(`  saltati: ${dest.skippedUnreachable.length} file`);
       continue;
     }
-    lines.push(`  copiati e verificati: ${dest.copied.length}`);
+    const hashed = dest.copied.filter((f) => f.verified).length;
+    lines.push(`  copiati e controllati (dimensione e data): ${dest.copied.length}, di cui con hash: ${hashed}`);
     for (const f of dest.failed) {
       lines.push(`  FALLITO: ${f.relPath} — ${f.error}`);
     }
   }
+  if (report.warnings.length > 0) {
+    lines.push(`\nAvvisi (${report.warnings.length}):`);
+    for (const w of report.warnings) lines.push(`  ${w}`);
+  }
   if (report.removedFromSource.length > 0) {
-    lines.push(`\nFile presenti in destinazione ma non più nella sorgente (${report.removedFromSource.length}):`);
-    for (const f of report.removedFromSource.slice(0, 50)) {
-      lines.push(`  ${f.relPath} (${f.destinationRoot})`);
-    }
+    const shown = report.removedFromSource.slice(0, 50);
+    lines.push(`\nFile presenti in destinazione ma non più nella sorgente (${report.removedFromSource.length}), non cancellati:`);
+    for (const f of shown) lines.push(`  ${f.relPath} (${f.destinationRoot})`);
+    const hidden = report.removedFromSource.length - shown.length;
+    if (hidden > 0) lines.push(`  … e altri ${hidden} (elenco completo nel file .json)`);
   }
   return lines.join("\n");
 }
