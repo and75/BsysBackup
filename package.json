@@ -10,7 +10,8 @@
     "dev": "npm run build && electron .",
     "backup": "npm run build && node dist/cli/backup.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dist:win": "npm run build && electron-builder --win --x64 --publish never"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -18,5 +19,35 @@
     "electron-builder": "^25.1.8",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "author": "BsysBackup",
+  "build": {
+    "appId": "com.bsysbackup.app",
+    "productName": "BsysBackup",
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.map",
+      "!dist/cli/**"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "artifactName": "BsysBackup-Setup-${version}.${ext}"
+    }
   }
 }
