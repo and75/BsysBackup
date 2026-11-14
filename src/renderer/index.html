@@ -15,12 +15,22 @@
       button:hover { opacity: 0.9; }
       .row { display: flex; gap: 8px; align-items: flex-end; }
       .row > div { flex: 1; }
-      ul { list-style: none; padding: 0; margin: 6px 0; font-size: 13px; }
-      li { padding: 4px 0; border-bottom: 1px solid #2a2a2a; display: flex; justify-content: space-between; }
+      #overridesList { list-style: none; padding: 0; margin: 6px 0; font-size: 13px; }
+      #overridesList li { padding: 4px 0; border-bottom: 1px solid #2a2a2a; display: flex; justify-content: space-between; }
       #log { white-space: pre-wrap; font-family: monospace; font-size: 12px; background: #111; padding: 8px; border-radius: 4px; max-height: 260px; overflow-y: auto; }
       .tag-new { color: #7fd17f; }
       .tag-modified { color: #e0c36b; }
       .tag-removed { color: #e07f7f; }
+      .tree, .tree-children { list-style: none; margin: 0; }
+      .tree-children { padding-left: 18px; }
+      .tree { max-height: 240px; overflow-y: auto; background: #181818; border: 1px solid #333; border-radius: 4px; padding: 6px 6px 6px 0; }
+      .tree-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 3px; cursor: default; }
+      .tree-row.selected { background: #2d6cdf33; }
+      .tree-toggle { width: 14px; display: inline-block; cursor: pointer; color: #888; user-select: none; }
+      .tree-name { cursor: pointer; flex: 1; }
+      .tree-name:hover { text-decoration: underline; }
+      .tree-badge { font-size: 11px; color: #9cc; background: #1d3a4a; padding: 1px 6px; border-radius: 10px; white-space: nowrap; }
+      #selectedPathLabel { font-size: 12px; color: #aaa; margin: 8px 0 4px; }
     </style>
   </head>
   <body>
@@ -54,18 +64,13 @@
 
     <section id="overridesSection" style="display:none">
       <h2>Destinazioni per sottocartella (override)</h2>
-      <div class="row">
-        <div>
-          <label>Sottocartella (relativa alla sorgente, es. Foto/2024)</label>
-          <input id="overrideRel" />
-        </div>
-        <div>
-          <label>Destinazione dedicata</label>
-          <input id="overrideDest" readonly />
-        </div>
-        <button class="secondary" id="pickOverrideDest">Scegli…</button>
-      </div>
-      <button id="addOverrideBtn">Aggiungi override</button>
+      <label>Sfoglia la sorgente e scegli la sottocartella da reindirizzare</label>
+      <ul id="sourceTree" class="tree"></ul>
+      <div id="selectedPathLabel">Nessuna sottocartella selezionata</div>
+      <button class="secondary" id="assignOverrideBtn" disabled>Assegna destinazione diversa…</button>
+      <button class="secondary" id="removeOverrideBtn" disabled>Rimuovi override</button>
+
+      <h2>Override attivi</h2>
       <ul id="overridesList"></ul>
     </section>
 
@@ -76,6 +81,6 @@
       <div id="log"></div>
     </section>
 
-    <script src="renderer.js"></script>
+    <script type="module" src="renderer.js"></script>
   </body>
 </html>

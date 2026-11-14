@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld("api", {
   createJob: (args: { name: string; sourceRoot: string; defaultDestination: string }) => ipcRenderer.invoke("job:create", args),
   setOverride: (args: { jobId: string; relativePath: string; destination: string }) => ipcRenderer.invoke("job:setOverride", args),
   removeOverride: (args: { jobId: string; relativePath: string }) => ipcRenderer.invoke("job:removeOverride", args),
-  listSubfolders: (args: { absolutePath: string }) => ipcRenderer.invoke("job:listSubfolders", args),
+  listSubfolders: (args: { jobId: string; relativePath: string }) => ipcRenderer.invoke("job:listSubfolders", args),
   previewJob: (args: { jobId: string }) => ipcRenderer.invoke("job:preview", args),
   runJob: (args: { jobId: string }) => ipcRenderer.invoke("job:run", args),
   onProgress: (callback: (info: { relPath: string; done: number; total: number }) => void) => {

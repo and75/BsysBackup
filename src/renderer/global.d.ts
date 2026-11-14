@@ -12,7 +12,7 @@ export interface BsysApi {
   createJob(args: { name: string; sourceRoot: string; defaultDestination: string }): Promise<Job>;
   setOverride(args: { jobId: string; relativePath: string; destination: string }): Promise<Job>;
   removeOverride(args: { jobId: string; relativePath: string }): Promise<Job>;
-  listSubfolders(args: { absolutePath: string }): Promise<string[]>;
+  listSubfolders(args: { jobId: string; relativePath: string }): Promise<string[]>;
   previewJob(args: { jobId: string }): Promise<PreviewResult>;
   runJob(args: { jobId: string }): Promise<BackupReport>;
   onProgress(callback: (info: { relPath: string; done: number; total: number }) => void): void;

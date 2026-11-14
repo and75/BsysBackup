@@ -84,9 +84,11 @@ function registerIpcHandlers(): void {
     return updated;
   });
 
-  ipcMain.handle("job:listSubfolders", async (_e, args: { absolutePath: string }) => {
+  ipcMain.handle("job:listSubfolders", async (_e, args: { jobId: string; relativePath: string }) => {
+    const job = await loadJob(userDataSubdir("jobs"), args.jobId);
+    const abs = args.relativePath ? join(job.sourceRoot, ...args.relativePath.split("/")) : job.sourceRoot;
     try {
-      const entries = await readdir(args.absolutePath, { withFileTypes: true });
+      const entries = await readdir(abs, { withFileTypes: true });
       return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
     } catch {
       return [];
