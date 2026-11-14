@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <title>BsysBackup</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #1e1e1e; color: #ddd; }
+      h1 { font-size: 18px; margin-bottom: 12px; }
+      h2 { font-size: 14px; color: #9cc; margin: 18px 0 6px; }
+      section { border: 1px solid #333; border-radius: 6px; padding: 12px; margin-bottom: 14px; }
+      label { display: block; font-size: 12px; color: #999; margin-top: 8px; }
+      input, select { width: 100%; box-sizing: border-box; padding: 6px; margin-top: 2px; background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 4px; }
+      button { margin-top: 8px; margin-right: 6px; padding: 6px 12px; background: #2d6cdf; color: white; border: none; border-radius: 4px; cursor: pointer; }
+      button.secondary { background: #444; }
+      button:hover { opacity: 0.9; }
+      .row { display: flex; gap: 8px; align-items: flex-end; }
+      .row > div { flex: 1; }
+      ul { list-style: none; padding: 0; margin: 6px 0; font-size: 13px; }
+      li { padding: 4px 0; border-bottom: 1px solid #2a2a2a; display: flex; justify-content: space-between; }
+      #log { white-space: pre-wrap; font-family: monospace; font-size: 12px; background: #111; padding: 8px; border-radius: 4px; max-height: 260px; overflow-y: auto; }
+      .tag-new { color: #7fd17f; }
+      .tag-modified { color: #e0c36b; }
+      .tag-removed { color: #e07f7f; }
+    </style>
+  </head>
+  <body>
+    <h1>BsysBackup — backup differenziale con destinazioni multiple</h1>
+
+    <section>
+      <h2>Job esistente</h2>
+      <select id="jobSelect"><option value="">— nessuno —</option></select>
+    </section>
+
+    <section>
+      <h2>Nuovo job</h2>
+      <label>Nome</label>
+      <input id="jobName" placeholder="es. Backup PC principale" />
+      <div class="row">
+        <div>
+          <label>Sorgente</label>
+          <input id="sourceRoot" readonly />
+        </div>
+        <button class="secondary" id="pickSource">Scegli…</button>
+      </div>
+      <div class="row">
+        <div>
+          <label>Destinazione di default</label>
+          <input id="defaultDestination" readonly />
+        </div>
+        <button class="secondary" id="pickDest">Scegli…</button>
+      </div>
+      <button id="createJobBtn">Crea job</button>
+    </section>
+
+    <section id="overridesSection" style="display:none">
+      <h2>Destinazioni per sottocartella (override)</h2>
+      <div class="row">
+        <div>
+          <label>Sottocartella (relativa alla sorgente, es. Foto/2024)</label>
+          <input id="overrideRel" />
+        </div>
+        <div>
+          <label>Destinazione dedicata</label>
+          <input id="overrideDest" readonly />
+        </div>
+        <button class="secondary" id="pickOverrideDest">Scegli…</button>
+      </div>
+      <button id="addOverrideBtn">Aggiungi override</button>
+      <ul id="overridesList"></ul>
+    </section>
+
+    <section id="actionsSection" style="display:none">
+      <h2>Esecuzione</h2>
+      <button class="secondary" id="previewBtn">Anteprima differenze</button>
+      <button id="runBtn">Esegui backup</button>
+      <div id="log"></div>
+    </section>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

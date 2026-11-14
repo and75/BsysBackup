@@ -1,0 +1,22 @@
+{
+  "name": "bsysbackup",
+  "version": "0.1.0",
+  "description": "Backup differenziale con destinazioni multiple per sottocartella e organizzazione assistita da LLM locale",
+  "private": true,
+  "main": "dist/main/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.js",
+    "dev": "npm run build && electron .",
+    "backup": "npm run build && node dist/cli/backup.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
