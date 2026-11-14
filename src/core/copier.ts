@@ -20,28 +20,78 @@ export async function ensureDir(path: string): Promise<boolean> {
 
 export interface RobocopyRunResult {
   ok: boolean;
+  cancelled: boolean;
   exitCode: number | null;
+  /** Coda dell'output, utile per la diagnosi */
   output: string;
+}
+
+export interface RobocopyOptions {
+  /** Chiamata per ogni file che Robocopy dichiara di copiare */
+  onFile?: () => void;
+  /** Annullando il segnale il processo Robocopy viene terminato */
+  signal?: AbortSignal;
+  /** false = nessuna riga per file (/NFL): serve solo a misurare quanto costa l'elenco */
+  listFiles?: boolean;
 }
 
 /**
  * Argomenti Robocopy per copiare un sottoalbero. Robocopy confronta già size+timestamp e copia
  * solo le differenze. /FFT usa la stessa tolleranza di 2s del nostro differ (dischi FAT32/exFAT),
  * /XJ non segue le junction, /XD esclude le sottocartelle destinate altrove e quelle di sistema.
+ * L'output è ridotto a una riga per file copiato (/NC /NS /NDL /NP /NJH /NJS, /XX per non
+ * elencare i file presenti solo in destinazione), così l'avanzamento si ricava contando le righe.
  */
-export function robocopyArgs(sourceDir: string, destDir: string, excludeDirs: string[]): string[] {
-  return [sourceDir, destDir, "/E", "/MT:8", "/FFT", "/XJ", "/R:2", "/W:2", "/NFL", "/NDL", "/NP", "/XD", ...SYSTEM_DIRS, ...excludeDirs];
+export function robocopyArgs(sourceDir: string, destDir: string, excludeDirs: string[], listFiles = true): string[] {
+  const fileList = listFiles ? ["/NC", "/NS"] : ["/NFL"];
+  return [
+    sourceDir, destDir,
+    "/E", "/MT:8", "/FFT", "/XJ", "/R:2", "/W:2",
+    "/XX", "/NDL", "/NP", "/NJH", "/NJS", ...fileList,
+    "/XD", ...SYSTEM_DIRS, ...excludeDirs,
+  ];
 }
 
+const OUTPUT_TAIL_CHARS = 4000;
+
 /** Exit code Robocopy: 0-7 = successo (con vari dettagli), >=8 = almeno un file non copiato. */
-export function runRobocopy(sourceDir: string, destDir: string, excludeDirs: string[] = []): Promise<RobocopyRunResult> {
+export function runRobocopy(sourceDir: string, destDir: string, excludeDirs: string[] = [], opts: RobocopyOptions = {}): Promise<RobocopyRunResult> {
   return new Promise((resolve) => {
-    const proc = spawn("robocopy", robocopyArgs(sourceDir, destDir, excludeDirs), { windowsHide: true });
+    if (opts.signal?.aborted) {
+      resolve({ ok: false, cancelled: true, exitCode: null, output: "" });
+      return;
+    }
+
+    const proc = spawn("robocopy", robocopyArgs(sourceDir, destDir, excludeDirs, opts.listFiles ?? true), { windowsHide: true });
+    const onAbort = () => proc.kill();
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+
     let output = "";
-    proc.stdout?.on("data", (d) => (output += d.toString()));
-    proc.stderr?.on("data", (d) => (output += d.toString()));
-    proc.on("close", (code) => resolve({ ok: code !== null && code < 8, exitCode: code, output }));
-    proc.on("error", (err) => resolve({ ok: false, exitCode: null, output: String(err) }));
+    let pendingLine = "";
+    const countLines = (text: string) => {
+      const lines = (pendingLine + text).split(/\r?\n/);
+      pendingLine = lines.pop() ?? "";
+      for (const line of lines) if (line.trim()) opts.onFile?.();
+    };
+
+    proc.stdout?.on("data", (d: Buffer) => {
+      const text = d.toString("latin1");
+      output = (output + text).slice(-OUTPUT_TAIL_CHARS);
+      countLines(text);
+    });
+    proc.stderr?.on("data", (d: Buffer) => {
+      output = (output + d.toString("latin1")).slice(-OUTPUT_TAIL_CHARS);
+    });
+
+    const finish = (exitCode: number | null, extra = "") => {
+      opts.signal?.removeEventListener("abort", onAbort);
+      if (pendingLine.trim()) opts.onFile?.();
+      pendingLine = "";
+      const cancelled = Boolean(opts.signal?.aborted);
+      resolve({ ok: !cancelled && exitCode !== null && exitCode < 8, cancelled, exitCode, output: output + extra });
+    };
+    proc.on("close", (code) => finish(code));
+    proc.on("error", (err) => finish(null, String(err)));
   });
 }
 
@@ -59,15 +109,17 @@ export interface CopyOutcome {
  */
 export async function copyPlannedFiles(
   files: PlannedFile[],
-  opts: { concurrency: number; computeHash: boolean }
+  opts: { concurrency: number; computeHash: boolean; signal?: AbortSignal; onFile?: (relPath: string) => void }
 ): Promise<Map<string, CopyOutcome>> {
   const results = new Map<string, CopyOutcome>();
   let index = 0;
 
+  // All'annullamento i file già in corso vengono completati; quelli non iniziati restano senza esito
   async function worker(): Promise<void> {
-    while (index < files.length) {
+    while (index < files.length && !opts.signal?.aborted) {
       const file = files[index++];
       results.set(file.relPath, await copyOne(file, opts.computeHash));
+      opts.onFile?.(file.relPath);
     }
   }
 

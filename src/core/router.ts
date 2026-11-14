@@ -5,6 +5,21 @@ export function normalizeRelPath(p: string): string {
   return p.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 }
 
+/**
+ * Windows non distingue maiuscole e minuscole nei percorsi: confrontarli alla lettera farebbe
+ * vedere come "nuovi" tutti i file di una cartella rinominata solo nelle maiuscole.
+ */
+let caseInsensitivePaths = process.platform === "win32";
+
+export function setCaseInsensitivePaths(value: boolean): void {
+  caseInsensitivePaths = value;
+}
+
+/** Chiave di confronto di un percorso relativo; per leggere o scrivere si usa sempre il percorso reale */
+export function pathKey(relPath: string): string {
+  return caseInsensitivePaths ? relPath.toLowerCase() : relPath;
+}
+
 export function toAbs(root: string, relPath: string): string {
   return relPath ? join(root, ...relPath.split("/")) : root;
 }
@@ -12,7 +27,9 @@ export function toAbs(root: string, relPath: string): string {
 /** true se `relPath` è dentro (o uguale a) la sottocartella `ancestorRelPath` */
 function isWithin(relPath: string, ancestorRelPath: string): boolean {
   if (ancestorRelPath === "") return true;
-  return relPath === ancestorRelPath || relPath.startsWith(ancestorRelPath + "/");
+  const rel = pathKey(relPath);
+  const ancestor = pathKey(ancestorRelPath);
+  return rel === ancestor || rel.startsWith(ancestor + "/");
 }
 
 /** L'override più specifico (percorso più lungo) che contiene il file, se esiste */
@@ -71,7 +88,7 @@ export function computeExcludeRelPaths(regions: Region[], region: Region): strin
   return regions
     .filter(
       (other) =>
-        other.relativePath !== region.relativePath &&
+        pathKey(other.relativePath) !== pathKey(region.relativePath) &&
         other.destination !== region.destination &&
         isWithin(other.relativePath, region.relativePath)
     )

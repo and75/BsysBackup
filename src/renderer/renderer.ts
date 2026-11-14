@@ -23,6 +23,7 @@ const actionsSection = $<HTMLElement>("actionsSection");
 const verifyWithHashInput = $<HTMLInputElement>("verifyWithHash");
 const previewBtn = $<HTMLButtonElement>("previewBtn");
 const runBtn = $<HTMLButtonElement>("runBtn");
+const cancelBtn = $<HTMLButtonElement>("cancelBtn");
 const progressEl = $<HTMLDivElement>("progress");
 const logEl = $<HTMLDivElement>("log");
 
@@ -264,9 +265,13 @@ onClick(runBtn, async () => {
   progressEl.textContent = "";
   log("Backup in corso…");
   setBusy(true);
+  cancelBtn.disabled = false;
   try {
     const report = await window.api.runJob({ jobId: currentJob.id, verifyWithHash: verifyWithHashInput.checked });
     progressEl.textContent = "";
+    if (report.cancelled) {
+      log(`BACKUP ANNULLATO — ${report.totalInterrupted} file non copiati: verranno ripresi alla prossima esecuzione.`);
+    }
     log(`Copiati e controllati: ${report.totalCopied}  Falliti: ${report.totalFailed}  Saltati (destinazione non raggiungibile): ${report.totalSkippedUnreachable}`);
     for (const dest of report.destinations) {
       if (!dest.reachable) log(`ATTENZIONE — destinazione non raggiungibile: ${dest.destinationRoot}`);
@@ -278,11 +283,20 @@ onClick(runBtn, async () => {
     }
   } finally {
     setBusy(false);
+    cancelBtn.disabled = true;
   }
 });
 
+onClick(cancelBtn, async () => {
+  cancelBtn.disabled = true;
+  log("Annullamento richiesto…");
+  await window.api.cancelJob();
+});
+
 window.api.onProgress((info) => {
-  progressEl.textContent = `Verifica ${info.done}/${info.total}: ${info.relPath}`;
+  if (info.phase === "scan") progressEl.textContent = "Fase 1 di 3 — Analisi di sorgente e destinazioni…";
+  else if (info.phase === "copy") progressEl.textContent = `Fase 2 di 3 — Copia: ${info.done} di ${info.total} file`;
+  else progressEl.textContent = `Fase 3 di 3 — Verifica: ${info.done} di ${info.total} — ${info.relPath ?? ""}`;
 });
 
 refreshJobSelect().catch((err) => log(`ERRORE: ${err instanceof Error ? err.message : String(err)}`));

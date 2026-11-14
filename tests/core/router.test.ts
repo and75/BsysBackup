@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { resolveDestinationRoot, resolveRegionPath, buildRegions, computeExcludeRelPaths, planRegionCopies } from "../../src/core/router";
+import { afterEach, describe, expect, it } from "vitest";
+import { resolveDestinationRoot, resolveRegionPath, buildRegions, computeExcludeRelPaths, planRegionCopies, setCaseInsensitivePaths } from "../../src/core/router";
 import { robocopyArgs } from "../../src/core/copier";
 import { setOverride } from "../../src/core/job";
 import { join } from "node:path";
@@ -93,11 +93,13 @@ describe("planRegionCopies (coppie sorgente → destinazione per Robocopy)", () 
     expect(resolveRegionPath(j, "Foto/2024/a.jpg")).toBe("Foto/2024");
   });
 
-  it("passa a Robocopy la tolleranza FAT e le cartelle da escludere", () => {
+  it("passa a Robocopy la tolleranza FAT, le cartelle da escludere e l'elenco di un file per riga", () => {
     const args = robocopyArgs("C:\\src", "E:\\dest", ["C:\\src\\Foto"]);
     expect(args.slice(0, 2)).toEqual(["C:\\src", "E:\\dest"]);
-    expect(args).toContain("/FFT");
+    expect(args).toEqual(expect.arrayContaining(["/FFT", "/XJ", "/XX", "/NC", "/NS", "/NDL", "/NP", "/NJH", "/NJS"]));
+    expect(args).not.toContain("/NFL");
     expect(args.slice(args.indexOf("/XD") + 1)).toEqual(["System Volume Information", "$RECYCLE.BIN", "C:\\src\\Foto"]);
+    expect(robocopyArgs("a", "b", [], false)).toContain("/NFL");
   });
 });
 
@@ -105,5 +107,24 @@ describe("setOverride", () => {
   it("rifiuta un override sulla cartella principale", () => {
     expect(() => setOverride(job([]), "", "/x")).toThrow();
     expect(() => setOverride(job([]), "/", "/x")).toThrow();
+  });
+});
+
+describe("percorsi senza distinzione fra maiuscole e minuscole (Windows)", () => {
+  afterEach(() => setCaseInsensitivePaths(process.platform === "win32"));
+
+  it("applica l'override anche se la cartella è stata rinominata solo nelle maiuscole", () => {
+    const j = job([{ relativePath: "Foto", destination: "/fotoDest" }]);
+    setCaseInsensitivePaths(true);
+    expect(resolveDestinationRoot(j, "foto/2024/img.jpg")).toBe("/fotoDest");
+    expect(resolveDestinationRoot(j, "Fotografie/img.jpg")).toBe("/default");
+    setCaseInsensitivePaths(false);
+    expect(resolveDestinationRoot(j, "foto/2024/img.jpg")).toBe("/default");
+  });
+
+  it("un nuovo override sulla stessa cartella sostituisce quello esistente", () => {
+    setCaseInsensitivePaths(true);
+    const j = setOverride(job([{ relativePath: "Foto", destination: "/vecchia" }]), "foto", "/nuova");
+    expect(j.overrides).toEqual([{ relativePath: "foto", destination: "/nuova" }]);
   });
 });

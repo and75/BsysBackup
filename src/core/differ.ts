@@ -1,5 +1,5 @@
 import type { FileEntry, Job, PlannedFile } from "./types";
-import { resolveDestinationRoot, toAbs } from "./router";
+import { pathKey, resolveDestinationRoot, toAbs } from "./router";
 
 export interface DiffResult {
   /** File da copiare (nuovi o modificati) o già uguali (unchanged, utile per il report) */
@@ -36,14 +36,14 @@ export function buildDiff(
   const destIndex = new Map<string, Map<string, FileEntry>>();
   for (const [root, entries] of destEntriesByRoot) {
     const m = new Map<string, FileEntry>();
-    for (const e of entries) m.set(e.relPath, e);
+    for (const e of entries) m.set(pathKey(e.relPath), e);
     destIndex.set(root, m);
   }
 
   for (const src of sourceEntries) {
     const destRoot = resolveDestinationRoot(job, src.relPath);
     const destMap = destIndex.get(destRoot);
-    const existing = destMap?.get(src.relPath);
+    const existing = destMap?.get(pathKey(src.relPath));
 
     let action: PlannedFile["action"];
     if (!existing) {
@@ -68,10 +68,10 @@ export function buildDiff(
   // File rimossi dalla sorgente: solo per i relPath che, se esistessero nella sorgente,
   // sarebbero instradati verso questa stessa destinazione (evita falsi positivi quando
   // una destinazione contiene ancora dati "orfani" di un override cambiato).
-  const sourceSet = new Set(sourceEntries.map((e) => e.relPath));
+  const sourceSet = new Set(sourceEntries.map((e) => pathKey(e.relPath)));
   for (const [root, entries] of destEntriesByRoot) {
     for (const e of entries) {
-      if (sourceSet.has(e.relPath)) continue;
+      if (sourceSet.has(pathKey(e.relPath))) continue;
       if (resolveDestinationRoot(job, e.relPath) !== root) continue;
       removedFromSource.push({
         relPath: e.relPath,

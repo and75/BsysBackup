@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createJob, setOverride } from "../../src/core/job";
 import { previewDiff, runBackup } from "../../src/core/runner";
-import type { Job } from "../../src/core/types";
+import type { Job, ProgressInfo } from "../../src/core/types";
 
 // Su Windows la copia passa da Robocopy vero, che ritenta per qualche secondo i file non scrivibili
 vi.setConfig({ testTimeout: 60_000 });
@@ -112,6 +112,49 @@ describe("runBackup (Robocopy su Windows, copia file-per-file altrove)", () => {
   });
 });
 
+describe("avanzamento e annullamento", () => {
+  it("segnala le tre fasi in ordine e conta ogni file copiato", async () => {
+    const events: ProgressInfo[] = [];
+    await runBackup(job, { reportsDir, onProgress: (info) => events.push({ ...info }) });
+
+    const phases = events.map((e) => e.phase).filter((p, i, all) => p !== all[i - 1]);
+    expect(phases).toEqual(["scan", "copy", "verify"]);
+    const lastOf = (phase: string) => events.filter((e) => e.phase === phase).at(-1);
+    expect(lastOf("copy")).toMatchObject({ done: 2, total: 2 });
+    expect(lastOf("verify")).toMatchObject({ done: 2, total: 2 });
+  });
+
+  it("annullato prima della copia non scrive nulla e riporta i file come interrotti, non falliti", async () => {
+    const run = new AbortController();
+    run.abort();
+    const report = await runBackup(job, { reportsDir, signal: run.signal });
+    expect(report).toMatchObject({ cancelled: true, totalCopied: 0, totalFailed: 0, totalInterrupted: 2 });
+    expect(await exists("dest")).toBe(false);
+    expect(await exists("destFoto")).toBe(false);
+  });
+
+  it("annullato a metà conserva i file già copiati e riprende gli altri al giro successivo", async () => {
+    const run = new AbortController();
+    const report = await runBackup(job, {
+      reportsDir,
+      concurrency: 1,
+      signal: run.signal,
+      onProgress: (info) => {
+        if (info.phase === "copy" && info.done === 1) run.abort();
+      },
+    });
+    expect(report.cancelled).toBe(true);
+    expect(report.totalFailed).toBe(0);
+    expect(report.totalCopied + report.totalInterrupted).toBe(2);
+    // Robocopy può aver già finito entrambi i file quando arriva l'annullamento; la copia file-per-file no
+    if (process.platform !== "win32") expect(report.totalInterrupted).toBe(1);
+
+    const resumed = await runBackup(job, { reportsDir });
+    expect(resumed).toMatchObject({ cancelled: false, totalCopied: report.totalInterrupted, totalFailed: 0 });
+    expect((await previewDiff(job)).planned.every((f) => f.action === "unchanged")).toBe(true);
+  });
+});
+
 describe("previewDiff", () => {
   it("non crea le cartelle di destinazione", async () => {
     await previewDiff(job);
@@ -123,6 +166,14 @@ describe("previewDiff", () => {
     await runBackup(job, { reportsDir });
     await rm(join(base, "src"), { recursive: true });
     await expect(previewDiff(job)).rejects.toThrow(/Sorgente non leggibile/);
+  });
+
+  it.runIf(process.platform === "win32")("su Windows una cartella rinominata solo nelle maiuscole non genera differenze", async () => {
+    await runBackup(job, { reportsDir });
+    await rename(join(base, "src/Documenti"), join(base, "src/documenti"));
+    const preview = await previewDiff(job);
+    expect(preview.planned.every((f) => f.action === "unchanged")).toBe(true);
+    expect(preview.removedFromSource).toEqual([]);
   });
 
   it("ignora i temporanei di una copia interrotta", async () => {

@@ -59,6 +59,10 @@ export interface BackupReport {
   totalCopied: number;
   totalFailed: number;
   totalSkippedUnreachable: number;
+  /** true se l'utente ha annullato il backup prima della fine */
+  cancelled: boolean;
+  /** File non copiati perché il backup è stato annullato: verranno ripresi alla prossima esecuzione */
+  totalInterrupted: number;
   removedFromSource: PlannedFile[];
   destinations: DestinationGroupReport[];
   /** Problemi non bloccanti: cartelle non leggibili, errori segnalati da Robocopy, ecc. */
@@ -70,4 +74,11 @@ export interface PreviewResult {
   removedFromSource: PlannedFile[];
   unreachableDestinations: string[];
   warnings: string[];
+}
+
+export interface ProgressInfo {
+  phase: "scan" | "copy" | "verify";
+  done: number;
+  total: number;
+  relPath?: string;
 }

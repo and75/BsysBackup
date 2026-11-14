@@ -6,6 +6,9 @@ export function summarizeReport(report: BackupReport): string {
   const lines: string[] = [];
   lines.push(`Backup "${report.jobName}" — ${report.startedAt} → ${report.finishedAt}`);
   lines.push(`Pianificati: ${report.totalPlanned}  Copiati OK: ${report.totalCopied}  Falliti: ${report.totalFailed}  Destinazioni irraggiungibili (saltati): ${report.totalSkippedUnreachable}`);
+  if (report.cancelled) {
+    lines.push(`BACKUP ANNULLATO: ${report.totalInterrupted} file non copiati, verranno ripresi alla prossima esecuzione`);
+  }
   for (const dest of report.destinations) {
     lines.push(`\nDestinazione: ${dest.destinationRoot} (${dest.reachable ? "raggiungibile" : "NON raggiungibile"})`);
     if (!dest.reachable) {

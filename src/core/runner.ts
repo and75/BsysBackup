@@ -1,4 +1,4 @@
-import type { BackupReport, CopyResult, DestinationGroupReport, FileEntry, Job, PlannedFile, PreviewResult } from "./types";
+import type { BackupReport, CopyResult, DestinationGroupReport, FileEntry, Job, PlannedFile, PreviewResult, ProgressInfo } from "./types";
 import { isReachable, pathExists, scanDirectory } from "./scanner";
 import { listDestinationRoots, planRegionCopies, resolveRegionPath } from "./router";
 import { buildDiff } from "./differ";
@@ -55,13 +55,20 @@ export interface RunBackupOptions {
   verifyWithHash?: boolean;
   /** Concorrenza della copia file-per-file (non usata con Robocopy) */
   concurrency?: number;
-  onProgress?: (info: { relPath: string; done: number; total: number }) => void;
+  onProgress?: (info: ProgressInfo) => void;
+  /**
+   * Annulla il backup: la copia si ferma, i file già arrivati vengono comunque controllati
+   * (senza hash) e gli altri contati come interrotti. Durante l'analisi ha effetto alla sua fine.
+   */
+  signal?: AbortSignal;
 }
 
 export async function runBackup(job: Job, opts: RunBackupOptions): Promise<BackupReport> {
   const startedAt = new Date().toISOString();
   const useHash = opts.verifyWithHash ?? job.verifyWithHash;
+  const signal = opts.signal;
 
+  opts.onProgress?.({ phase: "scan", done: 0, total: 0 });
   const preview = await previewDiff(job);
   const warnings = [...preview.warnings];
   const toCopy = preview.planned.filter((f) => f.action === "new" || f.action === "modified");
@@ -74,8 +81,10 @@ export async function runBackup(job: Job, opts: RunBackupOptions): Promise<Backu
     byDestination.set(f.destinationRoot, list);
   }
 
-  for (const root of byDestination.keys()) {
-    if (!unreachable.has(root) && !(await ensureDir(root))) unreachable.add(root);
+  if (!signal?.aborted) {
+    for (const root of byDestination.keys()) {
+      if (!unreachable.has(root) && !(await ensureDir(root))) unreachable.add(root);
+    }
   }
 
   const destReports = new Map<string, DestinationGroupReport>();
@@ -91,22 +100,49 @@ export async function runBackup(job: Job, opts: RunBackupOptions): Promise<Backu
   }
 
   const copyable = toCopy.filter((f) => !unreachable.has(f.destinationRoot));
+  const total = copyable.length;
   const copyErrors = new Map<string, string>();
   const sourceHashes = new Map<string, string>();
 
+  let copyDone = 0;
+  const reportCopy = (relPath?: string) => opts.onProgress?.({ phase: "copy", done: copyDone, total, relPath });
+  if (total > 0) reportCopy();
+
   if (isWindows) {
-    const regionsWithWork = new Set(copyable.map((f) => resolveRegionPath(job, f.relPath)));
+    const filesPerRegion = new Map<string, number>();
+    for (const f of copyable) {
+      const key = resolveRegionPath(job, f.relPath);
+      filesPerRegion.set(key, (filesPerRegion.get(key) ?? 0) + 1);
+    }
     for (const region of planRegionCopies(job)) {
-      if (!regionsWithWork.has(region.relativePath)) continue;
-      const result = await runRobocopy(region.sourceDir, region.destDir, region.excludeDirs);
-      if (!result.ok) {
+      const regionTotal = filesPerRegion.get(region.relativePath) ?? 0;
+      if (regionTotal === 0 || signal?.aborted) continue;
+      const doneBefore = copyDone;
+      let listed = 0;
+      const result = await runRobocopy(region.sourceDir, region.destDir, region.excludeDirs, {
+        signal,
+        onFile: () => {
+          // Robocopy elenca anche i tentativi falliti: il contatore non supera i file attesi
+          copyDone = doneBefore + Math.min(++listed, regionTotal);
+          reportCopy();
+        },
+      });
+      if (!result.ok && !result.cancelled) {
         warnings.push(`Robocopy ha segnalato errori (codice ${result.exitCode ?? "n/d"}) copiando ${region.sourceDir} in ${region.destDir}`);
       }
     }
   } else {
     for (const [root, files] of byDestination) {
-      if (unreachable.has(root)) continue;
-      const outcomes = await copyPlannedFiles(files, { concurrency: opts.concurrency ?? 4, computeHash: useHash });
+      if (unreachable.has(root) || signal?.aborted) continue;
+      const outcomes = await copyPlannedFiles(files, {
+        concurrency: opts.concurrency ?? 4,
+        computeHash: useHash,
+        signal,
+        onFile: (relPath) => {
+          copyDone++;
+          reportCopy(relPath);
+        },
+      });
       for (const [relPath, outcome] of outcomes) {
         if (!outcome.ok) copyErrors.set(relPath, outcome.error ?? "copia non riuscita");
         else if (outcome.sourceHash) sourceHashes.set(relPath, outcome.sourceHash);
@@ -114,17 +150,24 @@ export async function runBackup(job: Job, opts: RunBackupOptions): Promise<Backu
     }
   }
 
+  // Se l'annullamento arriva a copia finita, i file ci sono tutti: un controllo fallito è un vero errore
+  const cancelledDuringCopy = Boolean(signal?.aborted);
+
   // La verifica legge la destinazione dopo la copia, chiunque l'abbia eseguita: è ciò che
   // distingue "copiato" da "il copiatore non ha dato errori".
-  let done = 0;
+  let verifyDone = 0;
+  let totalInterrupted = 0;
   for (const file of copyable) {
     const report = destReports.get(file.destinationRoot) as DestinationGroupReport;
     const copyError = copyErrors.get(file.relPath);
     const result: CopyResult = copyError
       ? { relPath: file.relPath, destPath: file.destPath, ok: false, verified: false, error: copyError }
-      : await verifyCopiedFile(file, { useHash, knownSourceHash: sourceHashes.get(file.relPath) });
-    (result.ok ? report.copied : report.failed).push(result);
-    opts.onProgress?.({ relPath: file.relPath, done: ++done, total: copyable.length });
+      : await verifyCopiedFile(file, { useHash: useHash && !signal?.aborted, knownSourceHash: sourceHashes.get(file.relPath) });
+
+    if (result.ok) report.copied.push(result);
+    else if (cancelledDuringCopy && !copyError) totalInterrupted++;
+    else report.failed.push(result);
+    opts.onProgress?.({ phase: "verify", done: ++verifyDone, total, relPath: file.relPath });
   }
 
   const destinations = Array.from(destReports.values());
@@ -137,6 +180,8 @@ export async function runBackup(job: Job, opts: RunBackupOptions): Promise<Backu
     totalCopied: destinations.reduce((n, d) => n + d.copied.length, 0),
     totalFailed: destinations.reduce((n, d) => n + d.failed.length, 0),
     totalSkippedUnreachable: destinations.reduce((n, d) => n + d.skippedUnreachable.length, 0),
+    cancelled: Boolean(signal?.aborted),
+    totalInterrupted,
     removedFromSource: preview.removedFromSource,
     destinations,
     warnings,

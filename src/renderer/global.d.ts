@@ -1,4 +1,4 @@
-import type { Job, BackupReport, PreviewResult } from "../core/types";
+import type { Job, BackupReport, PreviewResult, ProgressInfo } from "../core/types";
 
 export interface BsysApi {
   selectFolder(): Promise<string | null>;
@@ -9,7 +9,8 @@ export interface BsysApi {
   listSubfolders(args: { jobId: string; relativePath: string }): Promise<string[]>;
   previewJob(args: { jobId: string }): Promise<PreviewResult>;
   runJob(args: { jobId: string; verifyWithHash: boolean }): Promise<BackupReport>;
-  onProgress(callback: (info: { relPath: string; done: number; total: number }) => void): void;
+  cancelJob(): Promise<void>;
+  onProgress(callback: (info: ProgressInfo) => void): void;
 }
 
 declare global {

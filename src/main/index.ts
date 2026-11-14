@@ -4,7 +4,9 @@ import { readdir } from "node:fs/promises";
 import { createJob, loadJob, removeOverride, saveJob, setOverride } from "../core/job";
 import { previewDiff, runBackup } from "../core/runner";
 import { toAbs } from "../core/router";
-import type { Job } from "../core/types";
+import type { Job, ProgressInfo } from "../core/types";
+
+let currentRun: AbortController | null = null;
 
 function userDataSubdir(name: string): string {
   return join(app.getPath("userData"), name);
@@ -50,6 +52,9 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+// Chiudendo l'app a backup in corso, Robocopy non deve restare a copiare senza verifica né report
+app.on("before-quit", () => currentRun?.abort());
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
@@ -100,19 +105,36 @@ function registerIpcHandlers(): void {
     return previewDiff(job);
   });
 
-  let backupRunning = false;
   ipcMain.handle("job:run", async (event, args: { jobId: string; verifyWithHash: boolean }) => {
-    if (backupRunning) throw new Error("Un backup è già in corso.");
-    backupRunning = true;
+    if (currentRun) throw new Error("Un backup è già in corso.");
+    const run = new AbortController();
+    currentRun = run;
+
+    // Un messaggio per file intaserebbe l'interfaccia: al massimo uno ogni 100 ms, più i cambi di fase e l'ultimo
+    let lastSent = 0;
+    let lastPhase = "";
+    const sendProgress = (info: ProgressInfo) => {
+      const now = Date.now();
+      if (info.phase === lastPhase && info.done !== info.total && now - lastSent < 100) return;
+      lastSent = now;
+      lastPhase = info.phase;
+      if (!event.sender.isDestroyed()) event.sender.send("job:progress", info);
+    };
+
     try {
       const job = await loadJob(userDataSubdir("jobs"), args.jobId);
       return await runBackup(job, {
         reportsDir: userDataSubdir("reports"),
         verifyWithHash: args.verifyWithHash,
-        onProgress: (info) => event.sender.send("job:progress", info),
+        onProgress: sendProgress,
+        signal: run.signal,
       });
     } finally {
-      backupRunning = false;
+      currentRun = null;
     }
+  });
+
+  ipcMain.handle("job:cancel", () => {
+    currentRun?.abort();
   });
 }

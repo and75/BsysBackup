@@ -26,3 +26,6 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - name: Costo dell'elenco per file di Robocopy
+        if: runner.os == 'Windows'
+        run: node scripts/bench-robocopy.js

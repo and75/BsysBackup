@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { buildDiff } from "../../src/core/differ";
+import { setCaseInsensitivePaths } from "../../src/core/router";
 import type { FileEntry, Job } from "../../src/core/types";
 
 function job(overrides: Job["overrides"] = []): Job {
@@ -80,5 +81,26 @@ describe("buildDiff", () => {
     const j = job([{ relativePath: "Foto", destination: "/fotoDest" }]);
     const { planned } = buildDiff(j, [entry("Foto/img.jpg", 1, 1)], new Map());
     expect(planned[0].destinationRoot).toBe("/fotoDest");
+  });
+});
+
+describe("buildDiff con cartella rinominata solo nelle maiuscole", () => {
+  afterEach(() => setCaseInsensitivePaths(process.platform === "win32"));
+
+  const source = [entry("foto/img.jpg", 5, 1000)];
+  const dest = () => new Map([["/default", [entry("Foto/img.jpg", 5, 1000)]]]);
+
+  it("su Windows il file risulta invariato e non compare fra i rimossi", () => {
+    setCaseInsensitivePaths(true);
+    const { planned, removedFromSource } = buildDiff(job(), source, dest());
+    expect(planned.map((f) => f.action)).toEqual(["unchanged"]);
+    expect(removedFromSource).toEqual([]);
+  });
+
+  it("dove i percorsi distinguono le maiuscole restano due file diversi", () => {
+    setCaseInsensitivePaths(false);
+    const { planned, removedFromSource } = buildDiff(job(), source, dest());
+    expect(planned.map((f) => f.action)).toEqual(["new"]);
+    expect(removedFromSource).toHaveLength(1);
   });
 });
