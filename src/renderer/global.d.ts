@@ -1,4 +1,4 @@
-import type { DeviceStatus, Job, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
+import type { DeviceStatus, DuplicateProgress, DuplicateSummary, Job, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
 
 export interface JobChanges {
   name?: string;
@@ -21,9 +21,12 @@ export interface BsysApi {
   previewJob(args: { jobId: string }): Promise<PreviewSummary>;
   runJob(args: { jobId: string }): Promise<ReportSummary>;
   cancelJob(): Promise<void>;
+  findDuplicates(args: { jobId: string }): Promise<DuplicateSummary>;
+  cancelDuplicates(): Promise<void>;
   listHistory(): Promise<ReportSummary[]>;
   openReport(args: { reportId: string }): Promise<void>;
   onProgress(callback: (info: ProgressInfo) => void): void;
+  onDuplicateProgress(callback: (info: DuplicateProgress) => void): void;
 }
 
 declare global {

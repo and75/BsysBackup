@@ -14,9 +14,14 @@ contextBridge.exposeInMainWorld("api", {
   previewJob: (args: unknown) => ipcRenderer.invoke("job:preview", args),
   runJob: (args: unknown) => ipcRenderer.invoke("job:run", args),
   cancelJob: () => ipcRenderer.invoke("job:cancel"),
+  findDuplicates: (args: unknown) => ipcRenderer.invoke("duplicates:find", args),
+  cancelDuplicates: () => ipcRenderer.invoke("duplicates:cancel"),
   listHistory: () => ipcRenderer.invoke("history:list"),
   openReport: (args: unknown) => ipcRenderer.invoke("report:open", args),
   onProgress: (callback: (info: unknown) => void) => {
     ipcRenderer.on("job:progress", (_event, info) => callback(info));
+  },
+  onDuplicateProgress: (callback: (info: unknown) => void) => {
+    ipcRenderer.on("duplicates:progress", (_event, info) => callback(info));
   },
 });

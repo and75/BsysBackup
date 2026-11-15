@@ -1,5 +1,5 @@
 /// <reference path="./global.d.ts" />
-import type { DeviceStatus, Job, Override, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
+import type { DeviceStatus, DuplicateProgress, DuplicateSummary, Job, Override, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
 
 export type View = { name: "home" } | { name: "new" } | { name: "job"; jobId: string } | { name: "result"; report: ReportSummary };
 
@@ -9,6 +9,14 @@ export type PreviewState =
   | { status: "error"; message: string }
   /** Analisi non avviata: la sorgente o un disco di destinazione non è collegato */
   | { status: "disconnected"; devices: DeviceStatus };
+
+export type DuplicatesState = { status: "ready"; summary: DuplicateSummary } | { status: "error"; message: string };
+
+export interface DuplicateSearch {
+  jobId: string;
+  progress: DuplicateProgress | null;
+  cancelling: boolean;
+}
 
 export interface Running {
   jobId: string;
@@ -22,6 +30,10 @@ export const state = {
   history: [] as ReportSummary[],
   previews: new Map<string, PreviewState>(),
   running: null as Running | null,
+  /** Esito dell'ultima ricerca di duplicati per ogni backup, finché l'app resta aperta */
+  duplicates: new Map<string, DuplicatesState>(),
+  /** La ricerca di duplicati in corso: una sola alla volta */
+  duplicateSearch: null as DuplicateSearch | null,
   error: null as string | null,
   /** false finché l'elenco dei backup non è stato letto: evita di mostrare per un attimo "nessun backup" */
   loaded: false,
@@ -33,6 +45,7 @@ export const state = {
 
 let renderView: () => void = () => {};
 const progressListeners = new Set<(progress: ProgressInfo | null) => void>();
+const duplicateListeners = new Set<(progress: DuplicateProgress | null) => void>();
 
 export function setRenderer(fn: () => void): void {
   renderView = fn;
@@ -40,6 +53,7 @@ export function setRenderer(fn: () => void): void {
 
 export function render(): void {
   progressListeners.clear();
+  duplicateListeners.clear();
   renderView();
 }
 
@@ -47,6 +61,12 @@ export function render(): void {
 export function onProgress(fn: (progress: ProgressInfo | null) => void): void {
   progressListeners.add(fn);
   fn(state.running?.progress ?? null);
+}
+
+/** Come onProgress, per l'avanzamento della ricerca dei duplicati */
+export function onDuplicateProgress(fn: (progress: DuplicateProgress | null) => void): void {
+  duplicateListeners.add(fn);
+  fn(state.duplicateSearch?.progress ?? null);
 }
 
 function errorMessage(err: unknown): string {
@@ -219,6 +239,7 @@ export async function changeFolder(jobId: string, field: "sourceRoot" | "default
   if (!folder) return;
   replaceJob(await window.api.updateJob({ jobId, changes: { [field]: folder } }));
   if (field === "sourceRoot") {
+    state.duplicates.delete(jobId);
     state.tree = { expanded: new Set([""]), children: new Map(), selected: null };
     await loadChildren(jobId, "");
   }
@@ -253,12 +274,15 @@ export async function deleteJob(jobId: string): Promise<void> {
   await window.api.deleteJob({ jobId });
   state.jobs = state.jobs.filter((j) => j.id !== jobId);
   state.previews.delete(jobId);
+  state.duplicates.delete(jobId);
   navigate({ name: "home" });
 }
 
 export async function runJob(jobId: string): Promise<void> {
   if (state.running) return;
   state.running = { jobId, progress: null, cancelling: false };
+  // Avviando un backup la ricerca dei duplicati viene interrotta: non è un errore da mostrare
+  if (state.duplicateSearch) state.duplicateSearch.cancelling = true;
   state.error = null;
   render();
   try {
@@ -282,6 +306,32 @@ export async function cancelRun(): Promise<void> {
   await window.api.cancelJob();
 }
 
+export async function findDuplicates(jobId: string): Promise<void> {
+  if (state.duplicateSearch || state.running) return;
+  const search: DuplicateSearch = { jobId, progress: null, cancelling: false };
+  const sourceRoot = jobById(jobId)?.sourceRoot;
+  state.duplicateSearch = search;
+  state.duplicates.delete(jobId);
+  render();
+  let result: DuplicatesState | null;
+  try {
+    result = { status: "ready", summary: await window.api.findDuplicates({ jobId }) };
+  } catch (err) {
+    result = search.cancelling ? null : { status: "error", message: errorMessage(err) };
+  }
+  state.duplicateSearch = null;
+  // Se nel frattempo la sorgente è stata cambiata, l'esito riguarda un'altra cartella
+  if (result && jobById(jobId)?.sourceRoot === sourceRoot) state.duplicates.set(jobId, result);
+  render();
+}
+
+export async function cancelDuplicates(): Promise<void> {
+  if (!state.duplicateSearch) return;
+  state.duplicateSearch.cancelling = true;
+  render();
+  await window.api.cancelDuplicates();
+}
+
 export async function openReport(reportId: string): Promise<void> {
   await window.api.openReport({ reportId });
 }
@@ -290,6 +340,12 @@ window.api.onProgress((info) => {
   if (!state.running) return;
   state.running.progress = info;
   for (const listener of progressListeners) listener(info);
+});
+
+window.api.onDuplicateProgress((info) => {
+  if (!state.duplicateSearch) return;
+  state.duplicateSearch.progress = info;
+  for (const listener of duplicateListeners) listener(info);
 });
 
 // Tornando all'app dopo aver collegato un disco, i backup in attesa vengono ricontrollati da soli

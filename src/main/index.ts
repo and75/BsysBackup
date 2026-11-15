@@ -2,12 +2,14 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { createJob, deleteJob, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
+import { analyzeDuplicates } from "../core/duplicates";
 import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
 import { toAbs } from "../core/router";
-import type { ProgressInfo } from "../core/types";
+import type { DuplicateProgress, ProgressInfo } from "../core/types";
 
 let currentRun: AbortController | null = null;
+let currentSearch: AbortController | null = null;
 
 const jobsDir = () => join(app.getPath("userData"), "jobs");
 const reportsDir = () => join(app.getPath("userData"), "reports");
@@ -39,7 +41,10 @@ app.whenReady().then(() => {
 });
 
 // Chiudendo l'app a backup in corso, Robocopy non deve restare a copiare senza verifica né report
-app.on("before-quit", () => currentRun?.abort());
+app.on("before-quit", () => {
+  currentRun?.abort();
+  currentSearch?.abort();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
@@ -100,6 +105,8 @@ function registerIpcHandlers(): void {
     if (currentRun) throw new Error("Un backup è già in corso.");
     const run = new AbortController();
     currentRun = run;
+    // Il backup ha la precedenza: una ricerca di duplicati sullo stesso disco lo rallenterebbe
+    currentSearch?.abort();
 
     // Un messaggio per file intaserebbe l'interfaccia: al massimo uno ogni 100 ms, più i cambi di fase e l'ultimo
     let lastSent = 0;
@@ -123,6 +130,35 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("job:cancel", () => {
     currentRun?.abort();
+  });
+
+  ipcMain.handle("duplicates:find", async (event, args: { jobId: string }) => {
+    if (currentRun) throw new Error("Un backup è in corso: cerca i duplicati quando è finito.");
+    if (currentSearch) throw new Error("Una ricerca di duplicati è già in corso.");
+    const search = new AbortController();
+    currentSearch = search;
+
+    let lastSent = 0;
+    const sendProgress = (info: DuplicateProgress) => {
+      const now = Date.now();
+      if (info.phase === "hash" && info.done !== info.total && now - lastSent < 100) return;
+      lastSent = now;
+      if (!event.sender.isDestroyed()) event.sender.send("duplicates:progress", info);
+    };
+
+    try {
+      const job = await loadJob(jobsDir(), args.jobId);
+      return await analyzeDuplicates(job.sourceRoot, { signal: search.signal, onProgress: sendProgress });
+    } catch (err) {
+      if (search.signal.aborted) throw new Error("Ricerca dei duplicati annullata.");
+      throw err;
+    } finally {
+      currentSearch = null;
+    }
+  });
+
+  ipcMain.handle("duplicates:cancel", () => {
+    currentSearch?.abort();
   });
 
   ipcMain.handle("history:list", () => readHistory(reportsDir(), 20));

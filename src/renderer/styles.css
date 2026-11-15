@@ -257,6 +257,13 @@ button.tree-toggle:hover { background: var(--surface-2); color: var(--text); }
 .changed-file .path { overflow-wrap: anywhere; white-space: normal; }
 .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Duplicati */
+.progress-text { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.dup-list { max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
+.dup-group { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--surface-2); border-radius: 8px; }
+.dup-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.dup-paths { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--text-soft); overflow-wrap: anywhere; }
+
 .check { min-height: 44px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-soft); cursor: pointer; }
 .check input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; }
 

@@ -1,14 +1,17 @@
-import type { Job, PreviewSummary } from "../core/types";
+import type { DuplicateGroup, Job, PreviewSummary } from "../core/types";
 import {
   analyze,
   assignOverride,
+  cancelDuplicates,
   cancelRun,
   changeFolder,
   clearOverride,
   deleteJob,
   destinationRoots,
+  findDuplicates,
   guard,
   navigate,
+  onDuplicateProgress,
   onProgress,
   overrideAt,
   refreshPreview,
@@ -108,6 +111,91 @@ function foldersPanel(job: Job): HTMLElement {
       h("p", { class: "muted small" }, "Ogni cartella segue quella che la contiene, salvo dove scegli un disco diverso. Seleziona una cartella per cambiarlo.")
     ),
     h("ul", { class: "tree-list tree" }, treeRow(job, "", job.sourceRoot, 0, unreachableRoots(job)))
+  );
+}
+
+function duplicateGroup(group: DuplicateGroup): HTMLElement {
+  const isFolder = group.kind === "folder";
+  const each = group.copies > 2 ? " ciascuna" : " l'una";
+  const hidden = group.copies - group.paths.length;
+  return h(
+    "li",
+    { class: "dup-group" },
+    h(
+      "div",
+      { class: "dup-head" },
+      h("span", { class: `pill ${isFolder ? "pill-info" : "pill-muted"}` }, isFolder ? "Cartella" : "File"),
+      h("span", null, `${formatNumber(group.copies)} copie identiche`),
+      h("span", { class: "muted" }, `${formatBytes(group.size)}${each}${isFolder ? `, ${fileCount(group.fileCount)}` : ""}`)
+    ),
+    h(
+      "ul",
+      { class: "dup-paths" },
+      ...group.paths.map((path) => h("li", null, path)),
+      hidden > 0 && h("li", { class: "muted" }, `… e altre ${formatNumber(hidden)}`)
+    )
+  );
+}
+
+function duplicatesSearching(): HTMLElement {
+  const fill = h("div", { class: "progress-fill" });
+  const bar = h("div", { class: "progress-bar", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100 }, fill);
+  const label = h("span", null);
+  const count = h("span", { class: "progress-count" });
+
+  onDuplicateProgress((progress) => {
+    const counting = progress?.phase === "hash" && progress.total > 0;
+    const percent = counting ? Math.round((progress.done / progress.total) * 100) : 0;
+    label.textContent = progress?.phase === "hash" ? "Confronto del contenuto dei file che potrebbero essere uguali" : "Lettura dell'elenco dei file";
+    count.textContent = counting ? `${formatBytes(progress.done)} di ${formatBytes(progress.total)}` : "";
+    fill.style.width = `${percent}%`;
+    bar.classList.toggle("indeterminate", !counting);
+    if (counting) bar.setAttribute("aria-valuenow", String(percent));
+    else bar.removeAttribute("aria-valuenow");
+  });
+
+  return h("div", { class: "progress" }, h("div", { class: "progress-text" }, label, count), bar);
+}
+
+function duplicatesPanel(job: Job): HTMLElement {
+  const search = state.duplicateSearch;
+  const searchingHere = search?.jobId === job.id;
+  const result = state.duplicates.get(job.id);
+
+  const action = searchingHere
+    ? h("button", { type: "button", class: "btn btn-small", disabled: search.cancelling, onclick: guard(cancelDuplicates) }, search.cancelling ? "Annullamento…" : "Annulla")
+    : h(
+        "button",
+        { type: "button", class: "btn btn-small", disabled: search !== null || state.running !== null, onclick: guard(() => findDuplicates(job.id)) },
+        result ? "Cerca di nuovo" : "Cerca duplicati"
+      );
+  const head = h("div", { class: "panel-head" }, h("h2", null, "Duplicati nella sorgente"), action);
+  const panel = (...body: (HTMLElement | false)[]) => h("section", { class: "panel", "aria-label": "Duplicati nella sorgente" }, head, ...body);
+
+  if (searchingHere) return panel(duplicatesSearching());
+  if (result?.status === "error") return panel(h("p", { class: "warn" }, result.message));
+  if (result?.status !== "ready") {
+    return panel(
+      h("p", { class: "muted small" }, "Trova i file e le cartelle presenti più volte con lo stesso identico contenuto. È una sola lettura: non viene spostato né cancellato nulla."),
+      search !== null && h("p", { class: "muted small" }, "Una ricerca è in corso su un altro backup.")
+    );
+  }
+
+  const { summary } = result;
+  const unreadable = summary.unreadable > 0 && h("p", { class: "warn small" }, `${formatNumber(summary.unreadable)} cartelle o file non leggibili: non sono stati confrontati.`);
+  if (summary.groups.length === 0) {
+    return panel(h("p", { class: "muted" }, `Nessun duplicato fra i ${fileCount(summary.scannedFiles)} della sorgente.`), unreadable);
+  }
+  const copies = summary.redundantFiles === 1 ? "1 copia in più occupa" : `${formatNumber(summary.redundantFiles)} copie in più occupano`;
+  return panel(
+    h("p", null, `${copies} ${formatBytes(summary.recoverableBytes)}, su ${fileCount(summary.scannedFiles)} controllati.`),
+    unreadable,
+    h(
+      "ul",
+      { class: "dup-list" },
+      ...summary.groups.map(duplicateGroup),
+      summary.groupsOmitted > 0 && h("li", { class: "muted small" }, `… e altri ${formatNumber(summary.groupsOmitted)} gruppi più piccoli`)
+    )
   );
 }
 
@@ -333,7 +421,8 @@ export function renderJob(job: Job): HTMLElement[] {
         "div",
         { class: "job-main" },
         h("div", { class: "fields" }, folderField(job, "Sorgente", "sourceRoot"), folderField(job, "Destinazione di default", "defaultDestination")),
-        foldersPanel(job)
+        foldersPanel(job),
+        duplicatesPanel(job)
       ),
       running ? runningPanel() : previewPanel(job)
     ),

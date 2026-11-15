@@ -129,6 +129,39 @@ export interface PreviewSummary {
   warningsOmitted: number;
 }
 
+/** File o cartelle con lo stesso identico contenuto, presenti più volte nella sorgente */
+export interface DuplicateGroup {
+  kind: "file" | "folder";
+  /** Percorsi relativi alla sorgente; nel riepilogo possono essere meno di `copies` */
+  paths: string[];
+  /** Quante volte compare il contenuto */
+  copies: number;
+  /** Dimensione di una singola copia, in byte */
+  size: number;
+  /** File contenuti in una copia (1 per un file) */
+  fileCount: number;
+}
+
+/** Esito della ricerca dei duplicati: conteggi e i gruppi che occupano più spazio */
+export interface DuplicateSummary {
+  scannedFiles: number;
+  /** Copie in più, contando i singoli file: ciò che si potrebbe togliere lasciandone una per contenuto */
+  redundantFiles: number;
+  /** Spazio occupato dalle copie in più, in byte */
+  recoverableBytes: number;
+  groups: DuplicateGroup[];
+  groupsOmitted: number;
+  /** Cartelle o file non leggibili, quindi non confrontati */
+  unreadable: number;
+}
+
+export interface DuplicateProgress {
+  phase: "scan" | "hash";
+  /** Byte già confrontati e byte da confrontare */
+  done: number;
+  total: number;
+}
+
 /** Esito del controllo rapido dei dispositivi di un backup, fatto senza leggere il contenuto delle cartelle */
 export interface DeviceStatus {
   sourceConnected: boolean;
