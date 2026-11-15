@@ -11,6 +11,7 @@ export function createJob(input: { name: string; sourceRoot: string; defaultDest
     sourceRoot: input.sourceRoot,
     defaultDestination: input.defaultDestination,
     overrides: [],
+    excludedPaths: [],
     verifyWithHash: input.verifyWithHash ?? false,
   };
 }
@@ -28,6 +29,25 @@ export function setOverride(job: Job, relativePath: string, destination: string)
 export function removeOverride(job: Job, relativePath: string): Job {
   const normalized = normalizeRelPath(relativePath);
   return { ...job, overrides: job.overrides.filter((o) => pathKey(o.relativePath) !== pathKey(normalized)) };
+}
+
+/**
+ * Esclude una cartella o un file dal backup. Vale anche per tutto il contenuto, se è una
+ * cartella: non si può reincludere un file dentro una cartella esclusa (vedi Job.excludedPaths).
+ */
+export function excludePath(job: Job, relativePath: string, isDirectory: boolean): Job {
+  const normalized = normalizeRelPath(relativePath);
+  if (normalized === "") {
+    throw new Error("La cartella sorgente non può essere esclusa: elimina il backup invece.");
+  }
+  if (job.excludedPaths.some((ex) => pathKey(ex.relativePath) === pathKey(normalized))) return job;
+  return { ...job, excludedPaths: [...job.excludedPaths, { relativePath: normalized, isDirectory }] };
+}
+
+/** Rimuove un'esclusione diretta. Non ha effetto su un percorso escluso solo perché dentro una cartella esclusa. */
+export function includePath(job: Job, relativePath: string): Job {
+  const normalized = normalizeRelPath(relativePath);
+  return { ...job, excludedPaths: job.excludedPaths.filter((ex) => pathKey(ex.relativePath) !== pathKey(normalized)) };
 }
 
 export type JobChanges = Partial<Pick<Job, "name" | "sourceRoot" | "defaultDestination" | "verifyWithHash">>;
@@ -60,7 +80,9 @@ export async function saveJob(jobsDir: string, job: Job): Promise<string> {
 }
 
 export async function loadJob(jobsDir: string, jobId: string): Promise<Job> {
-  return JSON.parse(await readFile(jobPath(jobsDir, jobId), "utf-8")) as Job;
+  const job = JSON.parse(await readFile(jobPath(jobsDir, jobId), "utf-8")) as Job;
+  // i backup salvati prima dell'introduzione delle esclusioni non hanno questo campo
+  return { ...job, excludedPaths: job.excludedPaths ?? [] };
 }
 
 /** Elimina solo la configurazione: i file già copiati e i report restano dove sono */

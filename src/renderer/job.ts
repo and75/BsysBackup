@@ -10,8 +10,11 @@ import {
   clearOverride,
   deleteJob,
   destinationRoots,
+  excludePath,
+  excludingEntry,
   findDuplicates,
   guard,
+  includePath,
   navigate,
   onDuplicateProgress,
   onProgress,
@@ -50,38 +53,63 @@ function unreachableRoots(job: Job): Set<string> {
   return new Set(preview.summary.destinations.filter((d) => !d.reachable).map((d) => d.destinationRoot));
 }
 
-function treeRow(job: Job, relPath: string, label: string, depth: number, missing: Set<string>): HTMLElement {
+function treeRow(job: Job, relPath: string, label: string, isDirectory: boolean, depth: number, missing: Set<string>): HTMLElement {
   const expanded = state.tree.expanded.has(relPath);
   const selected = state.tree.selected === relPath;
-  const own = relPath === "" ? undefined : overrideAt(job, relPath);
-  const destination = resolveDestination(job, relPath);
-  const knownEmpty = state.tree.children.get(relPath)?.length === 0;
+  const own = isDirectory && relPath !== "" ? overrideAt(job, relPath) : undefined;
+  const destination = isDirectory ? resolveDestination(job, relPath) : undefined;
+  const knownEmpty = isDirectory && state.tree.children.get(relPath)?.length === 0;
+  const isRoot = relPath === "";
 
-  const toggle = knownEmpty
-    ? h("span", { class: "tree-toggle" })
-    : h(
-        "button",
-        {
-          type: "button",
-          class: "tree-toggle",
-          "aria-label": `${expanded ? "Chiudi" : "Apri"} ${label}`,
-          "aria-expanded": String(expanded),
-          onclick: guard(() => toggleFolder(job.id, relPath)),
-        },
-        icon(expanded ? "chevronDown" : "chevronRight", 14)
-      );
+  const toggle =
+    !isDirectory || knownEmpty
+      ? h("span", { class: "tree-toggle" })
+      : h(
+          "button",
+          {
+            type: "button",
+            class: "tree-toggle",
+            "aria-label": `${expanded ? "Chiudi" : "Apri"} ${label}`,
+            "aria-expanded": String(expanded),
+            onclick: guard(() => toggleFolder(job.id, relPath)),
+          },
+          icon(expanded ? "chevronDown" : "chevronRight", 14)
+        );
+
+  const exclusion = excludingEntry(job, relPath);
+  const directlyExcluded = exclusion?.relativePath === relPath;
+  const checkbox = h("input", {
+    type: "checkbox",
+    class: "tree-check",
+    disabled: isRoot || (exclusion !== undefined && !directlyExcluded) || state.running !== null,
+    title: isRoot
+      ? "La cartella principale non si esclude: elimina il backup invece"
+      : exclusion && !directlyExcluded
+        ? `Esclusa insieme a ${exclusion.relativePath}`
+        : "Includi nel backup",
+  }) as HTMLInputElement;
+  checkbox.checked = exclusion === undefined;
+  checkbox.addEventListener(
+    "change",
+    guard(() => (checkbox.checked ? includePath(job.id, relPath) : excludePath(job.id, relPath, isDirectory)))
+  );
+
+  const nameEl = isDirectory
+    ? h("button", { type: "button", class: "tree-name", "aria-pressed": String(selected), onclick: () => selectFolder(relPath) }, label)
+    : h("span", { class: "tree-name file" }, label);
 
   const row = h(
     "div",
-    { class: `tree-row${selected ? " selected" : ""}${depth === 0 ? " root" : ""}` },
+    { class: `tree-row${selected ? " selected" : ""}${depth === 0 ? " root" : ""}${exclusion ? " excluded" : ""}` },
     h("span", { class: `tree-indent depth-${Math.min(depth, 8)}` }),
+    checkbox,
     toggle,
-    h("button", { type: "button", class: "tree-name", "aria-pressed": String(selected), onclick: () => selectFolder(relPath) }, label),
-    missing.has(destination) && h("span", { class: "warn small" }, "non collegato"),
-    h("span", { class: own ? "chip" : "tree-dest" }, destination)
+    nameEl,
+    isDirectory && destination !== undefined && missing.has(destination) && h("span", { class: "warn small" }, "non collegato"),
+    isDirectory && h("span", { class: own ? "chip" : "tree-dest" }, destination)
   );
 
-  if (selected && relPath !== "") {
+  if (selected && isDirectory && relPath !== "") {
     const disabled = state.running !== null;
     row.append(
       h(
@@ -96,10 +124,16 @@ function treeRow(job: Job, relPath: string, label: string, depth: number, missin
   }
 
   const item = h("li", null, row);
-  if (expanded) {
+  if (isDirectory && expanded) {
     const children = state.tree.children.get(relPath) ?? [];
     if (children.length > 0) {
-      item.append(h("ul", { class: "tree-list" }, ...children.map((name) => treeRow(job, relPath ? `${relPath}/${name}` : name, name, depth + 1, missing))));
+      item.append(
+        h(
+          "ul",
+          { class: "tree-list" },
+          ...children.map((child) => treeRow(job, relPath ? `${relPath}/${child.name}` : child.name, child.name, child.isDirectory, depth + 1, missing))
+        )
+      );
     }
   }
   return item;
@@ -112,10 +146,14 @@ function foldersPanel(job: Job): HTMLElement {
     h(
       "div",
       null,
-      h("h2", null, "Cartelle e destinazioni"),
-      h("p", { class: "muted small" }, "Ogni cartella segue quella che la contiene, salvo dove scegli un disco diverso. Seleziona una cartella per cambiarlo.")
+      h("h2", null, "Cartelle e file"),
+      h(
+        "p",
+        { class: "muted small" },
+        "Ogni cartella segue quella che la contiene, salvo dove scegli un disco diverso. Deseleziona una cartella o un file per escluderlo dal backup: vale anche per tutto il suo contenuto."
+      )
     ),
-    h("ul", { class: "tree-list tree" }, treeRow(job, "", job.sourceRoot, 0, unreachableRoots(job)))
+    h("ul", { class: "tree-list tree" }, treeRow(job, "", job.sourceRoot, true, 0, unreachableRoots(job)))
   );
 }
 

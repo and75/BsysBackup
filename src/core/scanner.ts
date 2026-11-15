@@ -14,6 +14,11 @@ export interface ScanResult {
   skipped: string[];
 }
 
+export interface ScanOptions {
+  /** true per escludere quel percorso dalla scansione: una cartella esclusa non viene nemmeno attraversata */
+  shouldSkip?: (relPath: string, isDirectory: boolean) => boolean;
+}
+
 function toRelKey(root: string, abs: string): string {
   return relative(root, abs).split(sep).join("/");
 }
@@ -28,9 +33,10 @@ function describe(err: unknown): string {
  * Un errore sulla radice viene propagato; una sottocartella o un file non leggibile
  * viene saltato e riportato in `skipped`, senza interrompere la scansione.
  */
-export async function scanDirectory(root: string): Promise<ScanResult> {
+export async function scanDirectory(root: string, options: ScanOptions = {}): Promise<ScanResult> {
   const entries: FileEntry[] = [];
   const skipped: string[] = [];
+  const { shouldSkip } = options;
 
   async function walk(dir: string, isRoot: boolean): Promise<void> {
     let items;
@@ -46,12 +52,15 @@ export async function scanDirectory(root: string): Promise<ScanResult> {
       const abs = join(dir, item.name);
       if (item.isDirectory()) {
         if (SYSTEM_DIRS.includes(item.name)) continue;
+        if (shouldSkip?.(toRelKey(root, abs), true)) continue;
         await walk(abs, false);
       } else if (item.isFile()) {
         if (item.name.endsWith(PARTIAL_SUFFIX)) continue;
+        const relPath = toRelKey(root, abs);
+        if (shouldSkip?.(relPath, false)) continue;
         try {
           const s = await stat(abs);
-          entries.push({ relPath: toRelKey(root, abs), size: s.size, mtimeMs: s.mtimeMs });
+          entries.push({ relPath, size: s.size, mtimeMs: s.mtimeMs });
         } catch (err) {
           skipped.push(`${abs} (${describe(err)})`);
         }

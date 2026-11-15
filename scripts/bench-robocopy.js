@@ -29,7 +29,7 @@ async function main() {
       const dest = join(workDir, `${name}-${round}`);
       let listed = 0;
       const start = process.hrtime.bigint();
-      const result = await runRobocopy(source, dest, [], { listFiles, onFile: () => listed++ });
+      const result = await runRobocopy(source, dest, [], [], { listFiles, onFile: () => listed++ });
       const ms = Number(process.hrtime.bigint() - start) / 1e6;
       if (!result.ok) throw new Error(`Robocopy fallito (codice ${result.exitCode}): ${result.output}`);
       timings[name].push(ms);

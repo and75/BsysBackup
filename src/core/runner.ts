@@ -1,6 +1,6 @@
 import type { BackupReport, CopyResult, DestinationGroupReport, DeviceStatus, FileEntry, Job, PlannedFile, PreviewResult, PreviewSummary, ProgressInfo } from "./types";
 import { isReachable, pathExists, scanDirectory } from "./scanner";
-import { listDestinationRoots, planRegionCopies, resolveRegionPath } from "./router";
+import { isExcluded, listDestinationRoots, planRegionCopies, resolveRegionPath } from "./router";
 import { buildDiff } from "./differ";
 import { copyPlannedFiles, ensureDir, isWindows, runRobocopy } from "./copier";
 import { quickCheck, verifyPlannedFiles } from "./verifier";
@@ -78,7 +78,7 @@ export async function previewDiff(job: Job): Promise<PreviewResult> {
 
   let source;
   try {
-    source = await scanDirectory(job.sourceRoot);
+    source = await scanDirectory(job.sourceRoot, { shouldSkip: (relPath) => isExcluded(job, relPath) });
   } catch (err) {
     throw new Error(`Sorgente non leggibile: ${job.sourceRoot} (${(err as Error).message})`);
   }
@@ -215,7 +215,7 @@ export async function runBackup(job: Job, opts: RunBackupOptions): Promise<Backu
         copyDone = doneBefore + doneInRegion;
         reportCopy();
       });
-      const result = await runRobocopy(region.sourceDir, region.destDir, region.excludeDirs, { signal });
+      const result = await runRobocopy(region.sourceDir, region.destDir, region.excludeDirs, region.excludeFiles, { signal });
       watcher.stop();
 
       // La verifica che segue dirà quanti sono davvero arrivati; qui l'avanzamento si ferma

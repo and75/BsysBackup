@@ -1,15 +1,15 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
-import { createJob, deleteJob, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
 import { totalmem } from "node:os";
+import { createJob, deleteJob, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
 import { analyzeSource, summarizeDuplicates, type SourceAnalysis } from "../core/duplicates";
 import { listModels, ollamaBaseUrl, pickDefaultModel } from "../core/ollama";
 import { proposeReorganization } from "../core/organizer";
 import { loadSettings, saveSettings } from "../core/settings";
 import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
-import { toAbs } from "../core/router";
+import { isExcluded, toAbs } from "../core/router";
 import type { AiStatus, DuplicateProgress, ProgressInfo } from "../core/types";
 
 let currentRun: AbortController | null = null;
@@ -96,14 +96,29 @@ function registerIpcHandlers(): void {
     return updated;
   });
 
-  ipcMain.handle("job:listSubfolders", async (_e, args: { jobId: string; relativePath: string }) => {
+  ipcMain.handle("job:listChildren", async (_e, args: { jobId: string; relativePath: string }) => {
     const job = await loadJob(jobsDir(), args.jobId);
     try {
       const entries = await readdir(toAbs(job.sourceRoot, args.relativePath), { withFileTypes: true });
-      return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort((a, b) => a.localeCompare(b));
+      const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+      const dirs = entries.filter((e) => e.isDirectory()).map((e) => ({ name: e.name, isDirectory: true })).sort(byName);
+      const files = entries.filter((e) => e.isFile()).map((e) => ({ name: e.name, isDirectory: false })).sort(byName);
+      return [...dirs, ...files];
     } catch {
       return [];
     }
+  });
+
+  ipcMain.handle("job:excludePath", async (_e, args: { jobId: string; relativePath: string; isDirectory: boolean }) => {
+    const updated = excludePath(await loadJob(jobsDir(), args.jobId), args.relativePath, args.isDirectory);
+    await saveJob(jobsDir(), updated);
+    return updated;
+  });
+
+  ipcMain.handle("job:includePath", async (_e, args: { jobId: string; relativePath: string }) => {
+    const updated = includePath(await loadJob(jobsDir(), args.jobId), args.relativePath);
+    await saveJob(jobsDir(), updated);
+    return updated;
   });
 
   ipcMain.handle("job:devices", async (_e, args: { jobId: string }) => checkDevices(await loadJob(jobsDir(), args.jobId)));
@@ -161,7 +176,12 @@ function registerIpcHandlers(): void {
     try {
       const job = await loadJob(jobsDir(), args.jobId);
       analyses.delete(job.id);
-      const analysis = await analyzeSource(job.sourceRoot, { signal: search.signal, onProgress: sendProgress });
+      // Ciò che è escluso dal backup resta fuori anche da qui: spesso è escluso proprio perché ingombrante o irrilevante
+      const analysis = await analyzeSource(job.sourceRoot, {
+        signal: search.signal,
+        onProgress: sendProgress,
+        shouldSkip: (relPath) => isExcluded(job, relPath),
+      });
       analyses.set(job.id, analysis);
       return summarizeDuplicates(analysis);
     } catch (err) {

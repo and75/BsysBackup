@@ -1,5 +1,5 @@
 import type { FileEntry, Job, PlannedFile } from "./types";
-import { pathKey, resolveDestinationRoot, toAbs } from "./router";
+import { isExcluded, pathKey, resolveDestinationRoot, toAbs } from "./router";
 
 export interface DiffResult {
   /** File da copiare (nuovi o modificati) o già uguali (unchanged, utile per il report) */
@@ -72,6 +72,8 @@ export function buildDiff(
   for (const [root, entries] of destEntriesByRoot) {
     for (const e of entries) {
       if (sourceSet.has(pathKey(e.relPath))) continue;
+      // escluso di proposito: non è "rimosso dalla sorgente", è ancora lì, semplicemente non gestito
+      if (isExcluded(job, e.relPath)) continue;
       if (resolveDestinationRoot(job, e.relPath) !== root) continue;
       removedFromSource.push({
         relPath: e.relPath,

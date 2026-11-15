@@ -241,12 +241,17 @@ export interface SourceAnalysis {
 /** Scansiona la sorgente e ne cerca i duplicati. Legge soltanto: non sposta né cancella nulla. */
 export async function analyzeSource(
   sourceRoot: string,
-  opts: { signal?: AbortSignal; onProgress?: (info: DuplicateProgress) => void } = {}
+  opts: {
+    signal?: AbortSignal;
+    onProgress?: (info: DuplicateProgress) => void;
+    /** true per lasciare fuori dalla ricerca quel percorso, come le cartelle escluse dal backup */
+    shouldSkip?: (relPath: string, isDirectory: boolean) => boolean;
+  } = {}
 ): Promise<SourceAnalysis> {
   opts.onProgress?.({ phase: "scan", done: 0, total: 0 });
   let scan;
   try {
-    scan = await scanDirectory(sourceRoot);
+    scan = await scanDirectory(sourceRoot, { shouldSkip: opts.shouldSkip });
   } catch (err) {
     throw new Error(`Sorgente non leggibile: ${sourceRoot} (${(err as Error).message})`);
   }

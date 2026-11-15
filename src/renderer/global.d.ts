@@ -7,6 +7,11 @@ export interface JobChanges {
   verifyWithHash?: boolean;
 }
 
+export interface TreeChild {
+  name: string;
+  isDirectory: boolean;
+}
+
 export interface BsysApi {
   platform: string;
   selectFolder(): Promise<string | null>;
@@ -16,7 +21,9 @@ export interface BsysApi {
   deleteJob(args: { jobId: string }): Promise<void>;
   setOverride(args: { jobId: string; relativePath: string; destination: string }): Promise<Job>;
   removeOverride(args: { jobId: string; relativePath: string }): Promise<Job>;
-  listSubfolders(args: { jobId: string; relativePath: string }): Promise<string[]>;
+  listChildren(args: { jobId: string; relativePath: string }): Promise<TreeChild[]>;
+  excludePath(args: { jobId: string; relativePath: string; isDirectory: boolean }): Promise<Job>;
+  includePath(args: { jobId: string; relativePath: string }): Promise<Job>;
   checkDevices(args: { jobId: string }): Promise<DeviceStatus>;
   previewJob(args: { jobId: string }): Promise<PreviewSummary>;
   runJob(args: { jobId: string }): Promise<ReportSummary>;

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { Job, Override } from "./types";
+import type { ExcludedPath, Job, Override } from "./types";
 
 export function normalizeRelPath(p: string): string {
   return p.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
@@ -59,6 +59,16 @@ export function resolveRegionPath(job: Job, fileRelPath: string): string {
   return ov ? normalizeRelPath(ov.relativePath) : "";
 }
 
+/**
+ * true se il percorso, o una qualunque cartella che lo contiene, è stato escluso dal backup.
+ * Non esiste "reincludi questo file dentro la cartella esclusa": l'esclusione vale per tutto
+ * il contenuto, sempre (vedi il commento su Job.excludedPaths).
+ */
+export function isExcluded(job: Job, relPath: string): boolean {
+  const rel = normalizeRelPath(relPath);
+  return job.excludedPaths.some((ex) => isWithin(rel, normalizeRelPath(ex.relativePath)));
+}
+
 /** Tutte le destinazioni coinvolte da un job (default + override) */
 export function listDestinationRoots(job: Job): string[] {
   const set = new Set<string>([job.defaultDestination]);
@@ -101,17 +111,35 @@ export interface RegionCopyPlan {
   sourceDir: string;
   /** Mantiene il percorso relativo dentro la destinazione, come fanno differ e verifier */
   destDir: string;
+  /** Cartelle da passare come /XD: sia le regioni annidate con destinazione diversa sia le cartelle escluse */
   excludeDirs: string[];
+  /** File da passare come /XF */
+  excludeFiles: string[];
+}
+
+/** Le esclusioni dell'utente che ricadono dentro la sottocartella di questa regione */
+function excludedWithin(job: Job, regionRelativePath: string): ExcludedPath[] {
+  return job.excludedPaths.filter((ex) => isWithin(normalizeRelPath(ex.relativePath), regionRelativePath));
 }
 
 /** Coppie cartella sorgente → cartella destinazione da passare a un copiatore "ad albero" (Robocopy) */
 export function planRegionCopies(job: Job): RegionCopyPlan[] {
   const regions = buildRegions(job);
-  return regions.map((region) => ({
-    relativePath: region.relativePath,
-    destinationRoot: region.destination,
-    sourceDir: toAbs(job.sourceRoot, region.relativePath),
-    destDir: toAbs(region.destination, region.relativePath),
-    excludeDirs: computeExcludeRelPaths(regions, region).map((rel) => toAbs(job.sourceRoot, rel)),
-  }));
+  return regions.map((region) => {
+    const ownExcluded = excludedWithin(job, region.relativePath);
+    const excludeDirs = [
+      ...computeExcludeRelPaths(regions, region),
+      ...ownExcluded.filter((ex) => ex.isDirectory).map((ex) => ex.relativePath),
+    ].map((rel) => toAbs(job.sourceRoot, normalizeRelPath(rel)));
+    const excludeFiles = ownExcluded.filter((ex) => !ex.isDirectory).map((ex) => toAbs(job.sourceRoot, normalizeRelPath(ex.relativePath)));
+
+    return {
+      relativePath: region.relativePath,
+      destinationRoot: region.destination,
+      sourceDir: toAbs(job.sourceRoot, region.relativePath),
+      destDir: toAbs(region.destination, region.relativePath),
+      excludeDirs,
+      excludeFiles,
+    };
+  });
 }

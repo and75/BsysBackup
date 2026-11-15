@@ -3,13 +3,14 @@ import { buildDiff } from "../../src/core/differ";
 import { setCaseInsensitivePaths } from "../../src/core/router";
 import type { FileEntry, Job } from "../../src/core/types";
 
-function job(overrides: Job["overrides"] = []): Job {
+function job(overrides: Job["overrides"] = [], excludedPaths: Job["excludedPaths"] = []): Job {
   return {
     id: "j1",
     name: "test",
     sourceRoot: "/src",
     defaultDestination: "/default",
     overrides,
+    excludedPaths,
     verifyWithHash: false,
   };
 }
@@ -102,5 +103,17 @@ describe("buildDiff con cartella rinominata solo nelle maiuscole", () => {
     const { planned, removedFromSource } = buildDiff(job(), source, dest());
     expect(planned.map((f) => f.action)).toEqual(["new"]);
     expect(removedFromSource).toHaveLength(1);
+  });
+});
+
+describe("buildDiff con cartelle o file esclusi", () => {
+  // Chi scarta i percorsi esclusi dalla sorgente è lo scanner (vedi runner.test.ts): a buildDiff
+  // arrivano già filtrati. Qui si verifica solo che un file escluso ancora presente in
+  // destinazione (backup di prima dell'esclusione) non venga segnalato come "rimosso".
+  it("un file già nel backup ma ora escluso non risulta 'rimosso dalla sorgente'", () => {
+    const j = job([], [{ relativePath: "Foto", isDirectory: true }]);
+    const dest = new Map([["/default", [entry("Foto/vecchia.jpg", 5, 500)]]]);
+    const { removedFromSource } = buildDiff(j, [], dest);
+    expect(removedFromSource).toEqual([]);
   });
 });

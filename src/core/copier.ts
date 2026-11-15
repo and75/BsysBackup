@@ -42,27 +42,35 @@ export interface RobocopyOptions {
  * L'output è ridotto a una riga per file copiato (/NC /NS /NDL /NP /NJH /NJS, /XX per non
  * elencare i file presenti solo in destinazione), così l'avanzamento si ricava contando le righe.
  */
-export function robocopyArgs(sourceDir: string, destDir: string, excludeDirs: string[], listFiles = true): string[] {
+export function robocopyArgs(sourceDir: string, destDir: string, excludeDirs: string[], listFiles = true, excludeFiles: string[] = []): string[] {
   const fileList = listFiles ? ["/NC", "/NS"] : ["/NFL"];
-  return [
+  const args = [
     sourceDir, destDir,
     "/E", "/MT:8", "/FFT", "/XJ", "/R:2", "/W:2",
     "/XX", "/NDL", "/NP", "/NJH", "/NJS", ...fileList,
     "/XD", ...SYSTEM_DIRS, ...excludeDirs,
   ];
+  if (excludeFiles.length > 0) args.push("/XF", ...excludeFiles);
+  return args;
 }
 
 const OUTPUT_TAIL_CHARS = 4000;
 
 /** Exit code Robocopy: 0-7 = successo (con vari dettagli), >=8 = almeno un file non copiato. */
-export function runRobocopy(sourceDir: string, destDir: string, excludeDirs: string[] = [], opts: RobocopyOptions = {}): Promise<RobocopyRunResult> {
+export function runRobocopy(
+  sourceDir: string,
+  destDir: string,
+  excludeDirs: string[] = [],
+  excludeFiles: string[] = [],
+  opts: RobocopyOptions = {}
+): Promise<RobocopyRunResult> {
   return new Promise((resolve) => {
     if (opts.signal?.aborted) {
       resolve({ ok: false, cancelled: true, exitCode: null, output: "" });
       return;
     }
 
-    const proc = spawn("robocopy", robocopyArgs(sourceDir, destDir, excludeDirs, opts.listFiles ?? true), { windowsHide: true });
+    const proc = spawn("robocopy", robocopyArgs(sourceDir, destDir, excludeDirs, opts.listFiles ?? true, excludeFiles), { windowsHide: true });
     const onAbort = () => proc.kill();
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
