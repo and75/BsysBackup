@@ -1,6 +1,6 @@
 {
   "name": "bsysbackup",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Backup differenziale con destinazioni multiple per sottocartella e organizzazione assistita da LLM locale",
   "private": true,
   "main": "dist/main/index.js",

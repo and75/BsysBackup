@@ -12,12 +12,24 @@ export interface Override {
   destination: string;
 }
 
+export interface ExcludedPath {
+  /** Percorso relativo alla sourceRoot escluso dal backup, con tutto il suo contenuto se è una cartella */
+  relativePath: string;
+  isDirectory: boolean;
+}
+
 export interface Job {
   id: string;
   name: string;
   sourceRoot: string;
   defaultDestination: string;
   overrides: Override[];
+  /**
+   * Cartelle e file esclusi dal backup. Un'esclusione vale anche per tutto ciò che sta sotto:
+   * non è possibile reincludere un file dentro una cartella esclusa (Robocopy, su Windows,
+   * specchia intere sottocartelle e non supporta eccezioni annidate dentro una esclusione).
+   */
+  excludedPaths: ExcludedPath[];
   /** Se true, calcola e verifica l'hash SHA-256 oltre a size+mtime */
   verifyWithHash: boolean;
 }

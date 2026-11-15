@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
-import { createJob, deleteJob, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
+import { createJob, deleteJob, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
 import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
 import { toAbs } from "../core/router";
@@ -79,14 +79,29 @@ function registerIpcHandlers(): void {
     return updated;
   });
 
-  ipcMain.handle("job:listSubfolders", async (_e, args: { jobId: string; relativePath: string }) => {
+  ipcMain.handle("job:listChildren", async (_e, args: { jobId: string; relativePath: string }) => {
     const job = await loadJob(jobsDir(), args.jobId);
     try {
       const entries = await readdir(toAbs(job.sourceRoot, args.relativePath), { withFileTypes: true });
-      return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort((a, b) => a.localeCompare(b));
+      const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+      const dirs = entries.filter((e) => e.isDirectory()).map((e) => ({ name: e.name, isDirectory: true })).sort(byName);
+      const files = entries.filter((e) => e.isFile()).map((e) => ({ name: e.name, isDirectory: false })).sort(byName);
+      return [...dirs, ...files];
     } catch {
       return [];
     }
+  });
+
+  ipcMain.handle("job:excludePath", async (_e, args: { jobId: string; relativePath: string; isDirectory: boolean }) => {
+    const updated = excludePath(await loadJob(jobsDir(), args.jobId), args.relativePath, args.isDirectory);
+    await saveJob(jobsDir(), updated);
+    return updated;
+  });
+
+  ipcMain.handle("job:includePath", async (_e, args: { jobId: string; relativePath: string }) => {
+    const updated = includePath(await loadJob(jobsDir(), args.jobId), args.relativePath);
+    await saveJob(jobsDir(), updated);
+    return updated;
   });
 
   ipcMain.handle("job:devices", async (_e, args: { jobId: string }) => checkDevices(await loadJob(jobsDir(), args.jobId)));

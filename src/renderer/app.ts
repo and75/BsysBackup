@@ -1,5 +1,6 @@
 /// <reference path="./global.d.ts" />
-import type { DeviceStatus, Job, Override, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
+import type { DeviceStatus, ExcludedPath, Job, Override, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
+import type { TreeChild } from "./global.js";
 
 export type View = { name: "home" } | { name: "new" } | { name: "job"; jobId: string } | { name: "result"; report: ReportSummary };
 
@@ -25,7 +26,7 @@ export const state = {
   error: null as string | null,
   /** false finché l'elenco dei backup non è stato letto: evita di mostrare per un attimo "nessun backup" */
   loaded: false,
-  tree: { expanded: new Set<string>([""]), children: new Map<string, string[]>(), selected: null as string | null },
+  tree: { expanded: new Set<string>([""]), children: new Map<string, TreeChild[]>(), selected: null as string | null },
   showChangedList: false,
   confirmDelete: false,
   newJob: { name: "", sourceRoot: "", defaultDestination: "" },
@@ -92,6 +93,21 @@ export function resolveDestination(job: Job, relPath: string): string {
 
 export function destinationRoots(job: Job): string[] {
   return [...new Set([job.defaultDestination, ...job.overrides.map((o) => o.destination)])];
+}
+
+function isWithinPath(relPath: string, ancestorRelPath: string): boolean {
+  if (ancestorRelPath === "") return true;
+  const rel = pathKey(relPath);
+  const ancestor = pathKey(ancestorRelPath);
+  return rel === ancestor || rel.startsWith(ancestor + "/");
+}
+
+/**
+ * L'esclusione più vicina che riguarda relPath (se stesso o una cartella che lo contiene), se c'è.
+ * Non esiste "reincludi questo file dentro la cartella esclusa": vedi il motore (router.ts).
+ */
+export function excludingEntry(job: Job, relPath: string): ExcludedPath | undefined {
+  return job.excludedPaths.find((ex) => isWithinPath(relPath, ex.relativePath));
 }
 
 function replaceJob(job: Job): void {
@@ -165,7 +181,7 @@ export async function init(): Promise<void> {
 
 async function loadChildren(jobId: string, relPath: string): Promise<void> {
   if (state.tree.children.has(relPath)) return;
-  const children = await window.api.listSubfolders({ jobId, relativePath: relPath });
+  const children = await window.api.listChildren({ jobId, relativePath: relPath });
   if (state.view.name === "job" && state.view.jobId === jobId) state.tree.children.set(relPath, children);
 }
 
@@ -211,6 +227,16 @@ export async function assignOverride(jobId: string, relPath: string): Promise<vo
 
 export async function clearOverride(jobId: string, relPath: string): Promise<void> {
   replaceJob(await window.api.removeOverride({ jobId, relativePath: relPath }));
+  await analyze(jobId);
+}
+
+export async function excludePath(jobId: string, relPath: string, isDirectory: boolean): Promise<void> {
+  replaceJob(await window.api.excludePath({ jobId, relativePath: relPath, isDirectory }));
+  await analyze(jobId);
+}
+
+export async function includePath(jobId: string, relPath: string): Promise<void> {
+  replaceJob(await window.api.includePath({ jobId, relativePath: relPath }));
   await analyze(jobId);
 }
 

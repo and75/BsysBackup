@@ -1,17 +1,18 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveDestinationRoot, resolveRegionPath, buildRegions, computeExcludeRelPaths, planRegionCopies, setCaseInsensitivePaths } from "../../src/core/router";
+import { resolveDestinationRoot, resolveRegionPath, buildRegions, computeExcludeRelPaths, planRegionCopies, setCaseInsensitivePaths, isExcluded } from "../../src/core/router";
 import { robocopyArgs } from "../../src/core/copier";
 import { setOverride } from "../../src/core/job";
 import { join } from "node:path";
 import type { Job } from "../../src/core/types";
 
-function job(overrides: Job["overrides"]): Job {
+function job(overrides: Job["overrides"], excludedPaths: Job["excludedPaths"] = []): Job {
   return {
     id: "j1",
     name: "test",
     sourceRoot: "/src",
     defaultDestination: "/default",
     overrides,
+    excludedPaths,
     verifyWithHash: false,
   };
 }
@@ -72,15 +73,34 @@ describe("planRegionCopies (coppie sorgente → destinazione per Robocopy)", () 
     const j = job([{ relativePath: "Foto/2024", destination: "/fotoDest" }]);
     const plans = planRegionCopies(j);
     expect(plans).toEqual([
-      { relativePath: "", destinationRoot: "/default", sourceDir: "/src", destDir: "/default", excludeDirs: [join("/src", "Foto", "2024")] },
+      { relativePath: "", destinationRoot: "/default", sourceDir: "/src", destDir: "/default", excludeDirs: [join("/src", "Foto", "2024")], excludeFiles: [] },
       {
         relativePath: "Foto/2024",
         destinationRoot: "/fotoDest",
         sourceDir: join("/src", "Foto", "2024"),
         destDir: join("/fotoDest", "Foto", "2024"),
         excludeDirs: [],
+        excludeFiles: [],
       },
     ]);
+  });
+
+  it("passa a Robocopy anche le cartelle e i file esclusi dall'utente, per regione", () => {
+    const j = job(
+      [{ relativePath: "Foto", destination: "/fotoDest" }],
+      [
+        { relativePath: "Documenti/Bozze", isDirectory: true },
+        { relativePath: "Documenti/appunti.txt", isDirectory: false },
+        { relativePath: "Foto/2023", isDirectory: true },
+      ]
+    );
+    const plans = planRegionCopies(j);
+    const defaultPlan = plans.find((p) => p.relativePath === "")!;
+    expect(defaultPlan.excludeDirs).toEqual(expect.arrayContaining([join("/src", "Foto"), join("/src", "Documenti", "Bozze")]));
+    expect(defaultPlan.excludeFiles).toEqual([join("/src", "Documenti", "appunti.txt")]);
+    const fotoPlan = plans.find((p) => p.relativePath === "Foto")!;
+    expect(fotoPlan.excludeDirs).toEqual([join("/src", "Foto", "2023")]);
+    expect(fotoPlan.excludeFiles).toEqual([]);
   });
 
   it("assegna ogni file alla regione dell'override più specifico", () => {
@@ -100,6 +120,31 @@ describe("planRegionCopies (coppie sorgente → destinazione per Robocopy)", () 
     expect(args).not.toContain("/NFL");
     expect(args.slice(args.indexOf("/XD") + 1)).toEqual(["System Volume Information", "$RECYCLE.BIN", "C:\\src\\Foto"]);
     expect(robocopyArgs("a", "b", [], false)).toContain("/NFL");
+  });
+
+  it("aggiunge /XF solo se ci sono file da escludere", () => {
+    expect(robocopyArgs("a", "b", [])).not.toContain("/XF");
+    const args = robocopyArgs("a", "b", [], true, ["C:\\src\\nota.txt"]);
+    expect(args.slice(args.indexOf("/XF") + 1)).toEqual(["C:\\src\\nota.txt"]);
+  });
+});
+
+describe("isExcluded", () => {
+  it("un percorso non escluso è incluso di default", () => {
+    expect(isExcluded(job([]), "Documenti/fattura.txt")).toBe(false);
+  });
+
+  it("un file escluso direttamente risulta escluso", () => {
+    const j = job([], [{ relativePath: "Documenti/appunti.txt", isDirectory: false }]);
+    expect(isExcluded(j, "Documenti/appunti.txt")).toBe(true);
+    expect(isExcluded(j, "Documenti/fattura.txt")).toBe(false);
+  });
+
+  it("escludere una cartella esclude anche tutto il suo contenuto", () => {
+    const j = job([], [{ relativePath: "Foto", isDirectory: true }]);
+    expect(isExcluded(j, "Foto")).toBe(true);
+    expect(isExcluded(j, "Foto/2024/img.jpg")).toBe(true);
+    expect(isExcluded(j, "Fotografie/img.jpg")).toBe(false);
   });
 });
 
