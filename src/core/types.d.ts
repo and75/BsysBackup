@@ -214,6 +214,25 @@ export interface ReorgPlan {
   truncated: boolean;
 }
 
+/** Com'è andata l'applicazione di una proposta alla sorgente */
+export interface ApplyOutcome {
+  proposal: ReorgProposal;
+  /** "partial": un'unione in cui alcuni file sono rimasti nella cartella di partenza */
+  status: "done" | "partial" | "failed";
+  /** Cosa è successo, o perché non è stata applicata */
+  detail: string;
+  /** true se la cartella (o il file) di partenza non esiste più in quella posizione */
+  fromGone: boolean;
+}
+
+export interface ApplyResult {
+  outcomes: ApplyOutcome[];
+  /** Il backup con destinazioni personalizzate ed esclusioni aggiornate ai nuovi percorsi */
+  job: Job;
+  /** File di testo con l'elenco delle operazioni fatte */
+  logPath: string;
+}
+
 /** Esito del controllo rapido dei dispositivi di un backup, fatto senza leggere il contenuto delle cartelle */
 export interface DeviceStatus {
   sourceConnected: boolean;

@@ -1,5 +1,5 @@
 /// <reference path="./global.d.ts" />
-import type { AiStatus, DeviceStatus, DuplicateProgress, DuplicateSummary, ExcludedPath, Job, Override, PreviewSummary, ProgressInfo, ReorgPlan, ReportSummary } from "../core/types";
+import type { AiStatus, ApplyResult, DeviceStatus, DuplicateProgress, DuplicateSummary, ExcludedPath, Job, Override, PreviewSummary, ProgressInfo, ReorgPlan, ReportSummary } from "../core/types";
 import type { TreeChild } from "./global.js";
 
 export type View = { name: "home" } | { name: "new" } | { name: "job"; jobId: string } | { name: "result"; report: ReportSummary };
@@ -49,6 +49,12 @@ export const state = {
   aiChecking: false,
   plans: new Map<string, PlanState>(),
   proposal: null as ProposalRun | null,
+  /** Proposte spuntate dall'utente, per indice nell'elenco: all'inizio nessuna */
+  planSelection: new Map<string, Set<number>>(),
+  /** true mentre si chiede conferma prima di modificare la sorgente */
+  confirmApply: false,
+  applying: null as { jobId: string; done: number; total: number; cancelling: boolean } | null,
+  applyResults: new Map<string, ApplyResult>(),
   error: null as string | null,
   /** false finché l'elenco dei backup non è stato letto: evita di mostrare per un attimo "nessun backup" */
   loaded: false,
@@ -231,6 +237,7 @@ export function navigate(view: View): void {
   state.view = view;
   state.error = null;
   state.confirmDelete = false;
+  state.confirmApply = false;
   state.showChangedList = false;
   if (view.name === "new") state.newJob = { name: "", sourceRoot: "", defaultDestination: "" };
   if (view.name === "job") {
@@ -289,7 +296,8 @@ export async function changeFolder(jobId: string, field: "sourceRoot" | "default
   replaceJob(await window.api.updateJob({ jobId, changes: { [field]: folder } }));
   if (field === "sourceRoot") {
     state.duplicates.delete(jobId);
-    state.plans.delete(jobId);
+    forgetPlan(jobId);
+    state.applyResults.delete(jobId);
     state.tree = { expanded: new Set([""]), children: new Map(), selected: null };
     await loadChildren(jobId, "");
   }
@@ -325,7 +333,8 @@ export async function deleteJob(jobId: string): Promise<void> {
   state.jobs = state.jobs.filter((j) => j.id !== jobId);
   state.previews.delete(jobId);
   state.duplicates.delete(jobId);
-  state.plans.delete(jobId);
+  forgetPlan(jobId);
+  state.applyResults.delete(jobId);
   navigate({ name: "home" });
 }
 
@@ -363,7 +372,8 @@ export async function findDuplicates(jobId: string): Promise<void> {
   const sourceRoot = jobById(jobId)?.sourceRoot;
   state.duplicateSearch = search;
   state.duplicates.delete(jobId);
-  state.plans.delete(jobId);
+  forgetPlan(jobId);
+  state.applyResults.delete(jobId);
   render();
   let result: DuplicatesState | null;
   try {
@@ -384,6 +394,66 @@ export async function cancelDuplicates(): Promise<void> {
   state.duplicateSearch.cancelling = true;
   render();
   await window.api.cancelDuplicates();
+}
+
+function forgetPlan(jobId: string): void {
+  state.plans.delete(jobId);
+  state.planSelection.delete(jobId);
+  state.confirmApply = false;
+}
+
+export function toggleProposal(jobId: string, index: number): void {
+  const selection = state.planSelection.get(jobId) ?? new Set<number>();
+  if (selection.has(index)) selection.delete(index);
+  else selection.add(index);
+  state.planSelection.set(jobId, selection);
+  state.confirmApply = false;
+  render();
+}
+
+export function askApply(confirm: boolean): void {
+  state.confirmApply = confirm;
+  render();
+}
+
+/** Applica alla sorgente le proposte spuntate, poi rilegge tutto: l'elenco dei duplicati e la proposta non valgono più */
+export async function applyPlan(jobId: string): Promise<void> {
+  const indexes = [...(state.planSelection.get(jobId) ?? [])];
+  if (state.applying || state.running || indexes.length === 0) return;
+  state.applying = { jobId, done: 0, total: indexes.length, cancelling: false };
+  state.confirmApply = false;
+  render();
+  try {
+    const result = await window.api.applyPlan({ jobId, indexes });
+    replaceJob(result.job);
+    state.applyResults.set(jobId, result);
+    state.duplicates.delete(jobId);
+    forgetPlan(jobId);
+    if (state.view.name === "job" && state.view.jobId === jobId) {
+      state.tree = { expanded: new Set([""]), children: new Map(), selected: null };
+      await loadChildren(jobId, "");
+    }
+  } finally {
+    state.applying = null;
+    render();
+  }
+  await analyze(jobId);
+}
+
+export async function cancelApply(): Promise<void> {
+  if (!state.applying) return;
+  state.applying.cancelling = true;
+  render();
+  await window.api.cancelApply();
+}
+
+export function dismissApplyResult(jobId: string): void {
+  state.applyResults.delete(jobId);
+  render();
+}
+
+export async function openApplyLog(path: string): Promise<void> {
+  await window.api.openApplyLog({ path });
 }
 
 export async function checkAi(): Promise<void> {
@@ -410,7 +480,7 @@ export async function proposeReorganization(jobId: string): Promise<void> {
   const run: ProposalRun = { jobId, chars: 0, cancelling: false };
   const sourceRoot = jobById(jobId)?.sourceRoot;
   state.proposal = run;
-  state.plans.delete(jobId);
+  forgetPlan(jobId);
   render();
   let result: PlanState | null;
   try {
@@ -438,6 +508,12 @@ window.api.onProgress((info) => {
   if (!state.running) return;
   state.running.progress = info;
   for (const listener of progressListeners) listener(info);
+});
+
+window.api.onApplyProgress((info) => {
+  if (!state.applying) return;
+  state.applying = { ...state.applying, ...info };
+  render();
 });
 
 window.api.onProposalProgress((chars) => {

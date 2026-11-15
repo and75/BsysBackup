@@ -1,7 +1,7 @@
 import { readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Job, Override } from "./types";
+import type { ApplyOutcome, Job, Override } from "./types";
 import { normalizeRelPath, pathKey } from "./router";
 
 export function createJob(input: { name: string; sourceRoot: string; defaultDestination: string; verifyWithHash?: boolean }): Job {
@@ -48,6 +48,45 @@ export function excludePath(job: Job, relativePath: string, isDirectory: boolean
 export function includePath(job: Job, relativePath: string): Job {
   const normalized = normalizeRelPath(relativePath);
   return { ...job, excludedPaths: job.excludedPaths.filter((ex) => pathKey(ex.relativePath) !== pathKey(normalized)) };
+}
+
+function isUnder(relPath: string, ancestor: string): boolean {
+  return pathKey(relPath).startsWith(pathKey(ancestor) + "/");
+}
+
+/**
+ * Aggiorna destinazioni personalizzate ed esclusioni dopo che la sorgente è stata riordinata,
+ * così continuano a valere per le stesse cartelle nella loro nuova posizione.
+ */
+export function followReorganization(job: Job, outcomes: ApplyOutcome[]): Job {
+  let { overrides, excludedPaths } = job;
+  for (const { proposal, fromGone } of outcomes) {
+    // Se nella posizione di partenza è rimasto qualcosa, le sue regole devono restare
+    if (!fromGone) continue;
+    const from = normalizeRelPath(proposal.from);
+    const to = normalizeRelPath(proposal.to);
+    const follow = <T extends { relativePath: string }>(rules: T[]): T[] => {
+      const result: T[] = [];
+      for (const rule of rules) {
+        const rel = normalizeRelPath(rule.relativePath);
+        const exact = pathKey(rel) === pathKey(from);
+        let moved: T | null = rule;
+        if (proposal.action === "removeDuplicate") {
+          if (exact || isUnder(rel, from)) moved = null;
+        } else if (exact) {
+          // In un'unione la cartella confluisce in un'altra, che ha già le sue regole: quella della cartella sparita decade
+          moved = proposal.action === "merge" ? null : { ...rule, relativePath: to };
+        } else if (isUnder(rel, from)) {
+          moved = { ...rule, relativePath: to + rel.slice(from.length) };
+        }
+        if (moved && !result.some((r) => pathKey(r.relativePath) === pathKey((moved as T).relativePath))) result.push(moved);
+      }
+      return result;
+    };
+    overrides = follow(overrides);
+    excludedPaths = follow(excludedPaths);
+  }
+  return { ...job, overrides, excludedPaths };
 }
 
 export type JobChanges = Partial<Pick<Job, "name" | "sourceRoot" | "defaultDestination" | "verifyWithHash">>;

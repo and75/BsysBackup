@@ -1,7 +1,10 @@
-import type { DuplicateGroup, Job, PreviewSummary, ReorgAction, ReorgProposal } from "../core/types";
+import type { ApplyOutcome, DuplicateGroup, Job, PreviewSummary, ReorgAction, ReorgProposal } from "../core/types";
 import {
   analyze,
+  applyPlan,
+  askApply,
   assignOverride,
+  cancelApply,
   cancelDuplicates,
   cancelProposal,
   cancelRun,
@@ -10,6 +13,7 @@ import {
   clearOverride,
   deleteJob,
   destinationRoots,
+  dismissApplyResult,
   excludePath,
   excludingEntry,
   findDuplicates,
@@ -19,6 +23,7 @@ import {
   onDuplicateProgress,
   onProgress,
   onProposalProgress,
+  openApplyLog,
   overrideAt,
   proposeReorganization,
   refreshPreview,
@@ -30,6 +35,7 @@ import {
   setVerifyWithHash,
   state,
   toggleFolder,
+  toggleProposal,
 } from "./app.js";
 import { fileCount, formatBytes, formatNumber, h, icon } from "./dom.js";
 
@@ -249,20 +255,100 @@ const ACTION_LABELS: Record<ReorgAction, { label: string; verb: string }> = {
   removeDuplicate: { label: "Elimina la copia", verb: "e conserva" },
 };
 
-function proposalItem(proposal: ReorgProposal): HTMLElement {
+function proposalText(proposal: ReorgProposal): HTMLElement {
   const { label, verb } = ACTION_LABELS[proposal.action];
   return h(
+    "div",
+    { class: "dup-head" },
+    h("span", { class: `pill ${proposal.action === "removeDuplicate" ? "pill-warn" : "pill-info"}` }, label),
+    h("span", { class: "plan-path" }, proposal.from),
+    h("span", { class: "muted" }, verb),
+    h("span", { class: "plan-path" }, proposal.to)
+  );
+}
+
+function proposalItem(job: Job, proposal: ReorgProposal, index: number): HTMLElement {
+  const box = h("input", { type: "checkbox", disabled: state.applying !== null, "aria-label": `Applica: ${ACTION_LABELS[proposal.action].label} ${proposal.from}` }) as HTMLInputElement;
+  box.checked = state.planSelection.get(job.id)?.has(index) ?? false;
+  box.addEventListener("change", () => toggleProposal(job.id, index));
+  return h(
     "li",
-    { class: "dup-group" },
+    { class: "dup-group plan-item" },
+    box,
+    h("div", { class: "plan-item-text" }, proposalText(proposal), proposal.reason && h("p", { class: "muted small" }, proposal.reason))
+  );
+}
+
+/** Pulsante per applicare le proposte spuntate, con una conferma prima di toccare la sorgente */
+function applyControls(job: Job): HTMLElement | false {
+  const selected = state.planSelection.get(job.id)?.size ?? 0;
+  if (selected === 0) return h("p", { class: "muted small" }, "Spunta le proposte che vuoi applicare alla sorgente.");
+  const what = selected === 1 ? "la proposta selezionata" : `le ${formatNumber(selected)} proposte selezionate`;
+  if (!state.confirmApply) {
+    return h(
+      "div",
+      { class: "actions" },
+      h("button", { type: "button", class: "btn", disabled: state.running !== null, onclick: () => askApply(true) }, state.running !== null ? "Un backup è in corso" : `Applica ${what}…`)
+    );
+  }
+  return h(
+    "div",
+    { class: "plan-confirm", role: "alertdialog", "aria-label": "Conferma" },
+    h("p", null, `Stai per modificare la cartella sorgente applicando ${what}.`),
+    h(
+      "ul",
+      { class: "plan-notes small" },
+      h("li", null, "Le cartelle vengono spostate subito, senza mai sovrascrivere nulla."),
+      h("li", null, "Ciò che viene eliminato va nel Cestino, dopo aver ricontrollato che sia ancora una copia identica."),
+      h("li", null, "Al prossimo backup le cartelle spostate verranno copiate di nuovo nella nuova posizione.")
+    ),
     h(
       "div",
-      { class: "dup-head" },
-      h("span", { class: `pill ${proposal.action === "removeDuplicate" ? "pill-warn" : "pill-info"}` }, label),
-      h("span", { class: "plan-path" }, proposal.from),
-      h("span", { class: "muted" }, verb),
-      h("span", { class: "plan-path" }, proposal.to)
+      { class: "actions" },
+      h("button", { type: "button", class: "btn", onclick: () => askApply(false) }, "Annulla"),
+      h("button", { type: "button", class: "btn btn-danger", onclick: guard(() => applyPlan(job.id)) }, "Applica alla sorgente")
+    )
+  );
+}
+
+const OUTCOME_LABELS: Record<ApplyOutcome["status"], { label: string; pill: string }> = {
+  done: { label: "Fatto", pill: "pill-ok" },
+  partial: { label: "In parte", pill: "pill-warn" },
+  failed: { label: "Non applicata", pill: "pill-warn" },
+};
+
+/** Esito dell'applicazione: resta visibile finché non viene chiuso, anche se la proposta non c'è più */
+function applyResultPanel(job: Job): HTMLElement | false {
+  const result = state.applyResults.get(job.id);
+  if (!result) return false;
+  const done = result.outcomes.filter((o) => o.status !== "failed").length;
+  return h(
+    "section",
+    { class: "panel", "aria-label": "Esito della riorganizzazione" },
+    h(
+      "div",
+      { class: "panel-head" },
+      h("h2", null, "Esito della riorganizzazione"),
+      h("button", { type: "button", class: "btn btn-small", onclick: () => dismissApplyResult(job.id) }, "Chiudi")
     ),
-    proposal.reason && h("p", { class: "muted small" }, proposal.reason)
+    h("p", null, `${formatNumber(done)} di ${formatNumber(result.outcomes.length)} proposte applicate alla sorgente.`),
+    h(
+      "ul",
+      { class: "dup-list" },
+      ...result.outcomes.map((outcome) =>
+        h(
+          "li",
+          { class: "dup-group" },
+          h("div", { class: "dup-head" }, h("span", { class: `pill ${OUTCOME_LABELS[outcome.status].pill}` }, OUTCOME_LABELS[outcome.status].label), proposalText(outcome.proposal)),
+          h("p", { class: outcome.status === "done" ? "muted small" : "warn small" }, outcome.detail)
+        )
+      )
+    ),
+    h(
+      "div",
+      { class: "actions" },
+      h("button", { type: "button", class: "link", onclick: guard(() => openApplyLog(result.logPath)) }, "Apri il registro delle operazioni")
+    )
   );
 }
 
@@ -289,6 +375,21 @@ function reorganizePanel(job: Job): HTMLElement | false {
     h("section", { class: "panel", "aria-label": "Proposta di riorganizzazione" }, h("div", { class: "panel-head" }, title, action), ...body);
   const recheck = h("button", { type: "button", class: "btn btn-small", disabled: state.aiChecking, onclick: guard(checkAi) }, "Ricontrolla");
 
+  if (state.applying?.jobId === job.id) {
+    const { done, total, cancelling } = state.applying;
+    const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+    const fill = h("div", { class: "progress-fill" });
+    fill.style.width = `${percent}%`;
+    return panel(
+      h("button", { type: "button", class: "btn btn-small", disabled: cancelling, onclick: guard(cancelApply) }, cancelling ? "Annullamento…" : "Annulla"),
+      h(
+        "div",
+        { class: "progress" },
+        h("div", { class: "progress-text" }, h("span", null, "Applicazione delle proposte alla sorgente"), h("span", { class: "progress-count" }, `${formatNumber(done)} di ${formatNumber(total)}`)),
+        h("div", { class: "progress-bar", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": percent }, fill)
+      )
+    );
+  }
   if (runningHere) {
     const cancel = h("button", { type: "button", class: "btn btn-small", disabled: proposal.cancelling, onclick: guard(cancelProposal) }, proposal.cancelling ? "Annullamento…" : "Annulla");
     return panel(cancel, proposalRunning());
@@ -321,7 +422,7 @@ function reorganizePanel(job: Job): HTMLElement | false {
   const intro = h(
     "p",
     { class: "muted small" },
-    "Un modello di intelligenza artificiale in esecuzione su questo computer legge i nomi delle cartelle e i duplicati trovati, e suggerisce come riordinarli. Nulla esce dal computer e nulla viene spostato."
+    "Un modello di intelligenza artificiale in esecuzione su questo computer legge i nomi delle cartelle e i duplicati trovati, e suggerisce come riordinarli. Nulla esce dal computer, e nulla viene spostato senza la tua conferma."
   );
 
   if (result?.status === "error") return panel(false, controls, h("p", { class: "warn" }, result.message));
@@ -334,7 +435,7 @@ function reorganizePanel(job: Job): HTMLElement | false {
     controls,
     plan.summary !== "" && h("p", null, plan.summary),
     plan.proposals.length === 0 && h("p", { class: "muted" }, "Il modello non ha proposto modifiche."),
-    plan.proposals.length > 0 && h("ul", { class: "dup-list" }, ...plan.proposals.map(proposalItem)),
+    plan.proposals.length > 0 && h("ul", { class: "dup-list" }, ...plan.proposals.map((proposal, index) => proposalItem(job, proposal, index))),
     plan.truncated && h("p", { class: "warn small" }, "Il modello si è interrotto prima di finire: l'elenco può essere incompleto."),
     plan.discarded > 0 &&
       h(
@@ -342,7 +443,8 @@ function reorganizePanel(job: Job): HTMLElement | false {
         { class: "muted small" },
         `${plan.discarded === 1 ? "1 proposta scartata perché indicava" : `${formatNumber(plan.discarded)} proposte scartate perché indicavano`} cartelle inesistenti o spostamenti impossibili.`
       ),
-    h("p", { class: "muted small" }, `Sono suggerimenti di ${plan.model}, da valutare: l'app non sposta né cancella nulla.`)
+    h("p", { class: "muted small" }, `Sono suggerimenti di ${plan.model}, da valutare: nulla viene toccato finché non scegli tu cosa applicare.`),
+    plan.proposals.length > 0 && applyControls(job)
   );
 }
 
@@ -570,7 +672,8 @@ export function renderJob(job: Job): HTMLElement[] {
         h("div", { class: "fields" }, folderField(job, "Sorgente", "sourceRoot"), folderField(job, "Destinazione di default", "defaultDestination")),
         foldersPanel(job),
         duplicatesPanel(job),
-        reorganizePanel(job)
+        reorganizePanel(job),
+        applyResultPanel(job)
       ),
       running ? runningPanel() : previewPanel(job)
     ),

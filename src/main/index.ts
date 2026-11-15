@@ -1,8 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
-import { join } from "node:path";
-import { readdir, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
-import { createJob, deleteJob, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
+import { createJob, deleteJob, followReorganization, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
+import { applyProposals, formatApplyLog } from "../core/applier";
 import { analyzeSource, summarizeDuplicates, type SourceAnalysis } from "../core/duplicates";
 import { listModels, ollamaBaseUrl, pickDefaultModel } from "../core/ollama";
 import { proposeReorganization, UnreadableReplyError } from "../core/organizer";
@@ -10,16 +11,20 @@ import { loadSettings, saveSettings } from "../core/settings";
 import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
 import { isExcluded, toAbs } from "../core/router";
-import type { AiStatus, DuplicateProgress, ProgressInfo } from "../core/types";
+import type { AiStatus, ApplyResult, DuplicateProgress, ProgressInfo, ReorgPlan } from "../core/types";
 
 let currentRun: AbortController | null = null;
 let currentSearch: AbortController | null = null;
 let currentProposal: AbortController | null = null;
 /** Ultima ricerca di duplicati per backup: è il punto di partenza della proposta di riorganizzazione */
 const analyses = new Map<string, SourceAnalysis>();
+/** Ultima proposta per backup: si possono applicare solo le proposte che l'app stessa ha validato */
+const plans = new Map<string, { sourceRoot: string; plan: ReorgPlan }>();
+let currentApply: AbortController | null = null;
 
 const jobsDir = () => join(app.getPath("userData"), "jobs");
 const settingsPath = () => join(app.getPath("userData"), "settings.json");
+const applyLogsDir = () => join(app.getPath("userData"), "riorganizzazioni");
 const reportsDir = () => join(app.getPath("userData"), "reports");
 
 function createWindow(): void {
@@ -130,6 +135,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("job:run", async (event, args: { jobId: string }) => {
     if (currentRun) throw new Error("Un backup è già in corso.");
+    if (currentApply) throw new Error("La sorgente è in corso di riorganizzazione: avvia il backup quando ha finito.");
     const run = new AbortController();
     currentRun = run;
     // Il backup ha la precedenza: una ricerca di duplicati sullo stesso disco lo rallenterebbe
@@ -162,6 +168,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("duplicates:find", async (event, args: { jobId: string }) => {
     if (currentRun) throw new Error("Un backup è in corso: cerca i duplicati quando è finito.");
     if (currentSearch) throw new Error("Una ricerca di duplicati è già in corso.");
+    if (currentApply) throw new Error("La sorgente è in corso di riorganizzazione.");
     const search = new AbortController();
     currentSearch = search;
 
@@ -225,7 +232,10 @@ function registerIpcHandlers(): void {
     };
 
     try {
-      return await proposeReorganization(analysis, { baseUrl: ollamaBaseUrl(), model: args.model, signal: proposal.signal, onText: sendText });
+      plans.delete(job.id);
+      const plan = await proposeReorganization(analysis, { baseUrl: ollamaBaseUrl(), model: args.model, signal: proposal.signal, onText: sendText });
+      plans.set(job.id, { sourceRoot: job.sourceRoot, plan });
+      return plan;
     } catch (err) {
       if (proposal.signal.aborted) throw new Error("Proposta annullata.");
       if (err instanceof UnreadableReplyError) {
@@ -242,6 +252,52 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("ai:cancel", () => {
     currentProposal?.abort();
+  });
+
+  ipcMain.handle("reorg:apply", async (event, args: { jobId: string; indexes: number[] }): Promise<ApplyResult> => {
+    if (currentRun) throw new Error("Un backup è in corso: riordina la sorgente quando è finito.");
+    if (currentSearch || currentProposal || currentApply) throw new Error("Un'altra operazione sulla sorgente è in corso.");
+    const job = await loadJob(jobsDir(), args.jobId);
+    const stored = plans.get(job.id);
+    if (!stored || stored.sourceRoot !== job.sourceRoot) throw new Error("La proposta non è più valida: chiedine una nuova.");
+    const proposals = [...new Set(args.indexes)].sort((a, b) => a - b).map((i) => stored.plan.proposals[i]).filter(Boolean);
+    if (proposals.length === 0) throw new Error("Nessuna proposta selezionata.");
+
+    const apply = new AbortController();
+    currentApply = apply;
+    try {
+      const outcomes = await applyProposals(job.sourceRoot, proposals, {
+        trash: (path) => shell.trashItem(path),
+        signal: apply.signal,
+        onProgress: (done, total) => {
+          if (!event.sender.isDestroyed()) event.sender.send("reorg:progress", { done, total });
+        },
+      });
+      // La sorgente è cambiata: l'elenco dei duplicati e la proposta descrivono cartelle che non ci sono più
+      analyses.delete(job.id);
+      plans.delete(job.id);
+      const updated = followReorganization(job, outcomes);
+      await saveJob(jobsDir(), updated);
+
+      const now = new Date();
+      const stamp = now.toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
+      const logPath = join(applyLogsDir(), `riorganizzazione-${stamp}.txt`);
+      await mkdir(applyLogsDir(), { recursive: true });
+      await writeFile(logPath, formatApplyLog(job.sourceRoot, outcomes, now), "utf-8");
+      return { outcomes, job: updated, logPath };
+    } finally {
+      currentApply = null;
+    }
+  });
+
+  ipcMain.handle("reorg:cancel", () => {
+    currentApply?.abort();
+  });
+
+  ipcMain.handle("reorg:openLog", async (_e, args: { path: string }) => {
+    if (dirname(args.path) !== applyLogsDir() || !/^riorganizzazione-[\d-]+\.txt$/.test(basename(args.path))) throw new Error("Registro non valido.");
+    const error = await shell.openPath(args.path);
+    if (error) throw new Error(`Impossibile aprire il registro: ${error}`);
   });
 
   ipcMain.handle("history:list", () => readHistory(reportsDir(), 20));

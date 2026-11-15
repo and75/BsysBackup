@@ -273,6 +273,12 @@ button.tree-toggle:hover { background: var(--surface-2); color: var(--text); }
 .select { min-height: 36px; width: 100%; padding: 0 10px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); font: inherit; font-size: 13px; }
 .plan-path { font-weight: 500; overflow-wrap: anywhere; }
 
+.plan-item { flex-direction: row; align-items: flex-start; gap: 10px; }
+.plan-item input { width: 18px; height: 18px; margin: 2px 0 0; flex-shrink: 0; }
+.plan-item-text { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.plan-confirm { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: 8px; }
+.plan-notes { padding-left: 18px; list-style: disc; display: flex; flex-direction: column; gap: 4px; color: var(--text-soft); }
+
 .check { min-height: 44px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-soft); cursor: pointer; }
 .check input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; }
 
