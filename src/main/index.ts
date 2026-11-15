@@ -2,16 +2,24 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { createJob, deleteJob, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
-import { analyzeDuplicates } from "../core/duplicates";
+import { totalmem } from "node:os";
+import { analyzeSource, summarizeDuplicates, type SourceAnalysis } from "../core/duplicates";
+import { listModels, ollamaBaseUrl, pickDefaultModel } from "../core/ollama";
+import { proposeReorganization } from "../core/organizer";
+import { loadSettings, saveSettings } from "../core/settings";
 import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
 import { toAbs } from "../core/router";
-import type { DuplicateProgress, ProgressInfo } from "../core/types";
+import type { AiStatus, DuplicateProgress, ProgressInfo } from "../core/types";
 
 let currentRun: AbortController | null = null;
 let currentSearch: AbortController | null = null;
+let currentProposal: AbortController | null = null;
+/** Ultima ricerca di duplicati per backup: è il punto di partenza della proposta di riorganizzazione */
+const analyses = new Map<string, SourceAnalysis>();
 
 const jobsDir = () => join(app.getPath("userData"), "jobs");
+const settingsPath = () => join(app.getPath("userData"), "settings.json");
 const reportsDir = () => join(app.getPath("userData"), "reports");
 
 function createWindow(): void {
@@ -44,6 +52,7 @@ app.whenReady().then(() => {
 app.on("before-quit", () => {
   currentRun?.abort();
   currentSearch?.abort();
+  currentProposal?.abort();
 });
 
 app.on("window-all-closed", () => {
@@ -70,7 +79,10 @@ function registerIpcHandlers(): void {
     return updated;
   });
 
-  ipcMain.handle("job:delete", (_e, args: { jobId: string }) => deleteJob(jobsDir(), args.jobId));
+  ipcMain.handle("job:delete", (_e, args: { jobId: string }) => {
+    analyses.delete(args.jobId);
+    return deleteJob(jobsDir(), args.jobId);
+  });
 
   ipcMain.handle("job:setOverride", async (_e, args: { jobId: string; relativePath: string; destination: string }) => {
     const updated = setOverride(await loadJob(jobsDir(), args.jobId), args.relativePath, args.destination);
@@ -148,7 +160,10 @@ function registerIpcHandlers(): void {
 
     try {
       const job = await loadJob(jobsDir(), args.jobId);
-      return await analyzeDuplicates(job.sourceRoot, { signal: search.signal, onProgress: sendProgress });
+      analyses.delete(job.id);
+      const analysis = await analyzeSource(job.sourceRoot, { signal: search.signal, onProgress: sendProgress });
+      analyses.set(job.id, analysis);
+      return summarizeDuplicates(analysis);
     } catch (err) {
       if (search.signal.aborted) throw new Error("Ricerca dei duplicati annullata.");
       throw err;
@@ -159,6 +174,48 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("duplicates:cancel", () => {
     currentSearch?.abort();
+  });
+
+  ipcMain.handle("ai:status", async (): Promise<AiStatus> => {
+    const models = await listModels(ollamaBaseUrl());
+    if (!models) return { available: false, models: [], selected: null };
+    const saved = (await loadSettings(settingsPath())).aiModel;
+    const selected = models.some((m) => m.name === saved) ? (saved as string) : pickDefaultModel(models, totalmem());
+    return { available: true, models, selected };
+  });
+
+  ipcMain.handle("ai:selectModel", async (_e, args: { model: string }) => {
+    await saveSettings(settingsPath(), { ...(await loadSettings(settingsPath())), aiModel: args.model });
+  });
+
+  ipcMain.handle("ai:propose", async (event, args: { jobId: string; model: string }) => {
+    if (currentProposal) throw new Error("Una proposta di riorganizzazione è già in preparazione.");
+    const job = await loadJob(jobsDir(), args.jobId);
+    const analysis = analyses.get(job.id);
+    if (!analysis || analysis.sourceRoot !== job.sourceRoot) throw new Error("Cerca prima i duplicati: la proposta parte da quell'elenco.");
+    const proposal = new AbortController();
+    currentProposal = proposal;
+
+    let lastSent = 0;
+    const sendText = (chars: number) => {
+      const now = Date.now();
+      if (now - lastSent < 250) return;
+      lastSent = now;
+      if (!event.sender.isDestroyed()) event.sender.send("ai:progress", chars);
+    };
+
+    try {
+      return await proposeReorganization(analysis, { baseUrl: ollamaBaseUrl(), model: args.model, signal: proposal.signal, onText: sendText });
+    } catch (err) {
+      if (proposal.signal.aborted) throw new Error("Proposta annullata.");
+      throw err;
+    } finally {
+      currentProposal = null;
+    }
+  });
+
+  ipcMain.handle("ai:cancel", () => {
+    currentProposal?.abort();
   });
 
   ipcMain.handle("history:list", () => readHistory(reportsDir(), 20));

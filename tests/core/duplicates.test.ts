@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { analyzeDuplicates, findDuplicates } from "../../src/core/duplicates";
+import { analyzeSource, findDuplicates, summarizeDuplicates } from "../../src/core/duplicates";
 import { scanDirectory } from "../../src/core/scanner";
 
 let root: string;
@@ -132,13 +132,13 @@ describe("findDuplicates", () => {
   });
 });
 
-describe("analyzeDuplicates", () => {
+describe("analyzeSource", () => {
   it("riassume l'esito e fa avanzare il conteggio fino al totale", async () => {
     await put("a/film.bin", big("f", "uguale"));
     await put("b/film.bin", big("f", "uguale"));
     await put("unico.txt", "senza doppioni");
     const progress: { phase: string; done: number; total: number }[] = [];
-    const summary = await analyzeDuplicates(root, { onProgress: (info) => progress.push(info) });
+    const summary = summarizeDuplicates(await analyzeSource(root, { onProgress: (info) => progress.push(info) }));
     expect(summary.scannedFiles).toBe(3);
     expect(summary.redundantFiles).toBe(1);
     expect(summary.groups).toHaveLength(1);
@@ -150,6 +150,6 @@ describe("analyzeDuplicates", () => {
   });
 
   it("fallisce se la sorgente non esiste", async () => {
-    await expect(analyzeDuplicates(join(root, "assente"))).rejects.toThrow(/Sorgente non leggibile/);
+    await expect(analyzeSource(join(root, "assente"))).rejects.toThrow(/Sorgente non leggibile/);
   });
 });

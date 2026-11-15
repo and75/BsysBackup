@@ -1,9 +1,11 @@
-import type { DuplicateGroup, Job, PreviewSummary } from "../core/types";
+import type { DuplicateGroup, Job, PreviewSummary, ReorgAction, ReorgProposal } from "../core/types";
 import {
   analyze,
   assignOverride,
   cancelDuplicates,
+  cancelProposal,
   cancelRun,
+  checkAi,
   changeFolder,
   clearOverride,
   deleteJob,
@@ -13,11 +15,14 @@ import {
   navigate,
   onDuplicateProgress,
   onProgress,
+  onProposalProgress,
   overrideAt,
+  proposeReorganization,
   refreshPreview,
   render,
   resolveDestination,
   runJob,
+  selectAiModel,
   selectFolder,
   setVerifyWithHash,
   state,
@@ -196,6 +201,109 @@ function duplicatesPanel(job: Job): HTMLElement {
       ...summary.groups.map(duplicateGroup),
       summary.groupsOmitted > 0 && h("li", { class: "muted small" }, `… e altri ${formatNumber(summary.groupsOmitted)} gruppi più piccoli`)
     )
+  );
+}
+
+const ACTION_LABELS: Record<ReorgAction, { label: string; verb: string }> = {
+  move: { label: "Sposta", verb: "in" },
+  merge: { label: "Unisci", verb: "dentro" },
+  rename: { label: "Rinomina", verb: "in" },
+  removeDuplicate: { label: "Elimina la copia", verb: "e conserva" },
+};
+
+function proposalItem(proposal: ReorgProposal): HTMLElement {
+  const { label, verb } = ACTION_LABELS[proposal.action];
+  return h(
+    "li",
+    { class: "dup-group" },
+    h(
+      "div",
+      { class: "dup-head" },
+      h("span", { class: `pill ${proposal.action === "removeDuplicate" ? "pill-warn" : "pill-info"}` }, label),
+      h("span", { class: "plan-path" }, proposal.from),
+      h("span", { class: "muted" }, verb),
+      h("span", { class: "plan-path" }, proposal.to)
+    ),
+    proposal.reason && h("p", { class: "muted small" }, proposal.reason)
+  );
+}
+
+function proposalRunning(): HTMLElement {
+  const label = h("span", null);
+  onProposalProgress((chars) => {
+    label.textContent = chars > 0 ? `Il modello sta scrivendo la proposta: ${formatNumber(chars)} caratteri` : "Il modello sta leggendo l'elenco delle cartelle. Con un modello grande può volerci qualche minuto.";
+  });
+  return h(
+    "div",
+    { class: "progress" },
+    h("div", { class: "progress-text" }, label),
+    h("div", { class: "progress-bar indeterminate", role: "progressbar" }, h("div", { class: "progress-fill" }))
+  );
+}
+
+function reorganizePanel(job: Job): HTMLElement | false {
+  if (state.duplicates.get(job.id)?.status !== "ready") return false;
+  const { ai, proposal } = state;
+  const runningHere = proposal?.jobId === job.id;
+  const result = state.plans.get(job.id);
+  const title = h("h2", null, "Proposta di riorganizzazione");
+  const panel = (action: HTMLElement | false, ...body: (HTMLElement | false)[]) =>
+    h("section", { class: "panel", "aria-label": "Proposta di riorganizzazione" }, h("div", { class: "panel-head" }, title, action), ...body);
+  const recheck = h("button", { type: "button", class: "btn btn-small", disabled: state.aiChecking, onclick: guard(checkAi) }, "Ricontrolla");
+
+  if (runningHere) {
+    const cancel = h("button", { type: "button", class: "btn btn-small", disabled: proposal.cancelling, onclick: guard(cancelProposal) }, proposal.cancelling ? "Annullamento…" : "Annulla");
+    return panel(cancel, proposalRunning());
+  }
+  if (!ai) return panel(false, h("p", { class: "muted small" }, "Ricerca dei modelli di intelligenza artificiale installati su questo computer…"));
+  if (!ai.available) {
+    return panel(
+      recheck,
+      h("p", { class: "muted" }, "Per proporre come riordinare le cartelle serve Ollama, un programma gratuito che esegue i modelli di intelligenza artificiale su questo computer. Non risulta in esecuzione."),
+      h("p", { class: "muted small" }, "Installalo da ollama.com, scarica un modello (per esempio con il comando: ollama pull gemma2:9b) e premi Ricontrolla.")
+    );
+  }
+  if (ai.models.length === 0) {
+    return panel(recheck, h("p", { class: "muted" }, "Ollama è in esecuzione ma non ha modelli installati. Scaricane uno (per esempio con il comando: ollama pull gemma2:9b) e premi Ricontrolla."));
+  }
+
+  const select = h(
+    "select",
+    { class: "select", "aria-label": "Modello", disabled: proposal !== null },
+    ...ai.models.map((m) => h("option", { value: m.name }, `${m.name} — ${[m.parameterSize, formatBytes(m.size)].filter(Boolean).join(", ")}`))
+  );
+  select.value = ai.selected ?? ai.models[0].name;
+  select.addEventListener("change", guard(() => selectAiModel(select.value)));
+  const start = h(
+    "button",
+    { type: "button", class: "btn btn-small", disabled: proposal !== null, onclick: guard(() => proposeReorganization(job.id)) },
+    result ? "Proponi di nuovo" : "Proponi"
+  );
+  const controls = h("div", { class: "plan-controls" }, h("label", { class: "plan-model" }, h("span", { class: "muted small" }, "Modello"), select), start);
+  const intro = h(
+    "p",
+    { class: "muted small" },
+    "Un modello di intelligenza artificiale in esecuzione su questo computer legge i nomi delle cartelle e i duplicati trovati, e suggerisce come riordinarli. Nulla esce dal computer e nulla viene spostato."
+  );
+
+  if (result?.status === "error") return panel(false, controls, h("p", { class: "warn" }, result.message));
+  if (result?.status !== "ready") {
+    return panel(false, intro, controls, proposal !== null && h("p", { class: "muted small" }, "Una proposta è in preparazione per un altro backup."));
+  }
+  const { plan } = result;
+  return panel(
+    false,
+    controls,
+    plan.summary !== "" && h("p", null, plan.summary),
+    plan.proposals.length === 0 && h("p", { class: "muted" }, "Il modello non ha proposto modifiche."),
+    plan.proposals.length > 0 && h("ul", { class: "dup-list" }, ...plan.proposals.map(proposalItem)),
+    plan.discarded > 0 &&
+      h(
+        "p",
+        { class: "muted small" },
+        `${plan.discarded === 1 ? "1 proposta scartata perché indicava" : `${formatNumber(plan.discarded)} proposte scartate perché indicavano`} cartelle inesistenti o spostamenti impossibili.`
+      ),
+    h("p", { class: "muted small" }, `Sono suggerimenti di ${plan.model}, da valutare: l'app non sposta né cancella nulla.`)
   );
 }
 
@@ -422,7 +530,8 @@ export function renderJob(job: Job): HTMLElement[] {
         { class: "job-main" },
         h("div", { class: "fields" }, folderField(job, "Sorgente", "sourceRoot"), folderField(job, "Destinazione di default", "defaultDestination")),
         foldersPanel(job),
-        duplicatesPanel(job)
+        duplicatesPanel(job),
+        reorganizePanel(job)
       ),
       running ? runningPanel() : previewPanel(job)
     ),

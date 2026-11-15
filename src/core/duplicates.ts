@@ -229,11 +229,20 @@ export async function findDuplicates(root: string, entries: FileEntry[], opts: D
   return { groups, redundantFiles, recoverableBytes, warnings };
 }
 
+/** Ciò che una ricerca ha letto della sorgente: serve anche a chi propone una riorganizzazione */
+export interface SourceAnalysis {
+  sourceRoot: string;
+  entries: FileEntry[];
+  duplicates: DuplicateResult;
+  /** Cartelle o file non leggibili durante la scansione */
+  skipped: string[];
+}
+
 /** Scansiona la sorgente e ne cerca i duplicati. Legge soltanto: non sposta né cancella nulla. */
-export async function analyzeDuplicates(
+export async function analyzeSource(
   sourceRoot: string,
   opts: { signal?: AbortSignal; onProgress?: (info: DuplicateProgress) => void } = {}
-): Promise<DuplicateSummary> {
+): Promise<SourceAnalysis> {
   opts.onProgress?.({ phase: "scan", done: 0, total: 0 });
   let scan;
   try {
@@ -243,17 +252,22 @@ export async function analyzeDuplicates(
   }
   opts.signal?.throwIfAborted();
 
-  const result = await findDuplicates(sourceRoot, scan.entries, {
+  const duplicates = await findDuplicates(sourceRoot, scan.entries, {
     signal: opts.signal,
     onProgress: (done, total) => opts.onProgress?.({ phase: "hash", done, total }),
   });
+  return { sourceRoot, entries: scan.entries, duplicates, skipped: scan.skipped };
+}
 
+/** Riepilogo per l'interfaccia: conteggi e i gruppi più pesanti, senza l'elenco completo */
+export function summarizeDuplicates(analysis: SourceAnalysis): DuplicateSummary {
+  const { groups, redundantFiles, recoverableBytes, warnings } = analysis.duplicates;
   return {
-    scannedFiles: scan.entries.length,
-    redundantFiles: result.redundantFiles,
-    recoverableBytes: result.recoverableBytes,
-    groups: result.groups.slice(0, SUMMARY_GROUPS).map((g) => ({ ...g, paths: g.paths.slice(0, SUMMARY_PATHS) })),
-    groupsOmitted: Math.max(0, result.groups.length - SUMMARY_GROUPS),
-    unreadable: scan.skipped.length + result.warnings.length,
+    scannedFiles: analysis.entries.length,
+    redundantFiles,
+    recoverableBytes,
+    groups: groups.slice(0, SUMMARY_GROUPS).map((g) => ({ ...g, paths: g.paths.slice(0, SUMMARY_PATHS) })),
+    groupsOmitted: Math.max(0, groups.length - SUMMARY_GROUPS),
+    unreadable: analysis.skipped.length + warnings.length,
   };
 }

@@ -1,4 +1,4 @@
-import type { DeviceStatus, DuplicateProgress, DuplicateSummary, Job, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
+import type { AiStatus, DeviceStatus, DuplicateProgress, DuplicateSummary, Job, PreviewSummary, ProgressInfo, ReorgPlan, ReportSummary } from "../core/types";
 
 export interface JobChanges {
   name?: string;
@@ -23,9 +23,14 @@ export interface BsysApi {
   cancelJob(): Promise<void>;
   findDuplicates(args: { jobId: string }): Promise<DuplicateSummary>;
   cancelDuplicates(): Promise<void>;
+  aiStatus(): Promise<AiStatus>;
+  selectAiModel(args: { model: string }): Promise<void>;
+  proposeReorganization(args: { jobId: string; model: string }): Promise<ReorgPlan>;
+  cancelProposal(): Promise<void>;
   listHistory(): Promise<ReportSummary[]>;
   openReport(args: { reportId: string }): Promise<void>;
   onProgress(callback: (info: ProgressInfo) => void): void;
+  onProposalProgress(callback: (chars: number) => void): void;
   onDuplicateProgress(callback: (info: DuplicateProgress) => void): void;
 }
 

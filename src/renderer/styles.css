@@ -264,6 +264,11 @@ button.tree-toggle:hover { background: var(--surface-2); color: var(--text); }
 .dup-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
 .dup-paths { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--text-soft); overflow-wrap: anywhere; }
 
+.plan-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.plan-model { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.select { min-height: 36px; width: 100%; padding: 0 10px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); font: inherit; font-size: 13px; }
+.plan-path { font-weight: 500; overflow-wrap: anywhere; }
+
 .check { min-height: 44px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-soft); cursor: pointer; }
 .check input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; }
 

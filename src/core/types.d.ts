@@ -162,6 +162,44 @@ export interface DuplicateProgress {
   total: number;
 }
 
+/** Un modello installato in Ollama su questo computer */
+export interface AiModel {
+  name: string;
+  /** Spazio occupato su disco, in byte: è anche, all'incirca, la memoria che serve per usarlo */
+  size: number;
+  /** Numero di parametri come lo riporta Ollama, es. "9.2B" */
+  parameterSize: string;
+}
+
+export interface AiStatus {
+  /** false se Ollama non risponde su questo computer */
+  available: boolean;
+  models: AiModel[];
+  /** Modello scelto dall'utente o, in mancanza, quello consigliato fra gli installati */
+  selected: string | null;
+}
+
+export type ReorgAction = "move" | "merge" | "rename" | "removeDuplicate";
+
+/** Una modifica proposta alla sorgente. È solo un suggerimento: l'app non la esegue. */
+export interface ReorgProposal {
+  action: ReorgAction;
+  /** Cartella (o file, per un duplicato) esistente, relativa alla sorgente */
+  from: string;
+  /** Nuova posizione, cartella in cui confluire, nuovo nome o copia da conservare */
+  to: string;
+  reason: string;
+}
+
+export interface ReorgPlan {
+  model: string;
+  /** Osservazioni generali del modello sulla struttura */
+  summary: string;
+  proposals: ReorgProposal[];
+  /** Proposte scartate perché indicavano cartelle inesistenti o spostamenti impossibili */
+  discarded: number;
+}
+
 /** Esito del controllo rapido dei dispositivi di un backup, fatto senza leggere il contenuto delle cartelle */
 export interface DeviceStatus {
   sourceConnected: boolean;

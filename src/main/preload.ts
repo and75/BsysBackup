@@ -16,10 +16,17 @@ contextBridge.exposeInMainWorld("api", {
   cancelJob: () => ipcRenderer.invoke("job:cancel"),
   findDuplicates: (args: unknown) => ipcRenderer.invoke("duplicates:find", args),
   cancelDuplicates: () => ipcRenderer.invoke("duplicates:cancel"),
+  aiStatus: () => ipcRenderer.invoke("ai:status"),
+  selectAiModel: (args: unknown) => ipcRenderer.invoke("ai:selectModel", args),
+  proposeReorganization: (args: unknown) => ipcRenderer.invoke("ai:propose", args),
+  cancelProposal: () => ipcRenderer.invoke("ai:cancel"),
   listHistory: () => ipcRenderer.invoke("history:list"),
   openReport: (args: unknown) => ipcRenderer.invoke("report:open", args),
   onProgress: (callback: (info: unknown) => void) => {
     ipcRenderer.on("job:progress", (_event, info) => callback(info));
+  },
+  onProposalProgress: (callback: (chars: number) => void) => {
+    ipcRenderer.on("ai:progress", (_event, chars) => callback(chars));
   },
   onDuplicateProgress: (callback: (info: unknown) => void) => {
     ipcRenderer.on("duplicates:progress", (_event, info) => callback(info));
