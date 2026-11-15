@@ -33,11 +33,25 @@ function evaluate(wsUrl, expression) {
   });
 }
 
+// Su un eseguibile appena installato (soprattutto non firmato) Windows Defender può scansionarlo
+// alla prima esecuzione, ritardando in modo variabile l'avvio della finestra: si aspetta che il
+// pulsante compaia davvero invece di un'attesa fissa, che su una macchina più lenta sarebbe stata
+// insufficiente.
+async function waitForButton(wsUrl, text, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const found = await evaluate(wsUrl, `!!([...document.querySelectorAll("button")].find((b) => b.textContent === ${JSON.stringify(text)}))`);
+    if (found) return;
+    await sleep(500);
+  }
+  throw new Error(`Il pulsante "${text}" non è comparso entro ${timeoutMs / 1000} secondi`);
+}
+
 async function main() {
   const app = spawn(exe, [`--remote-debugging-port=${port}`, ...extraArgs], { stdio: "ignore" });
   try {
     const page = await findPage();
-    await sleep(1000);
+    await waitForButton(page.webSocketDebuggerUrl, "Nuovo backup", 20000);
     const result = await evaluate(
       page.webSocketDebuggerUrl,
       `(async () => {
