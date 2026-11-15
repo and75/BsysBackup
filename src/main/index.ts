@@ -1,11 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
-import { readdir } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { createJob, deleteJob, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
 import { analyzeSource, summarizeDuplicates, type SourceAnalysis } from "../core/duplicates";
 import { listModels, ollamaBaseUrl, pickDefaultModel } from "../core/ollama";
-import { proposeReorganization } from "../core/organizer";
+import { proposeReorganization, UnreadableReplyError } from "../core/organizer";
 import { loadSettings, saveSettings } from "../core/settings";
 import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
@@ -228,6 +228,12 @@ function registerIpcHandlers(): void {
       return await proposeReorganization(analysis, { baseUrl: ollamaBaseUrl(), model: args.model, signal: proposal.signal, onText: sendText });
     } catch (err) {
       if (proposal.signal.aborted) throw new Error("Proposta annullata.");
+      if (err instanceof UnreadableReplyError) {
+        // Senza vedere cosa ha scritto il modello non si capisce perché la risposta non era leggibile
+        const path = join(app.getPath("userData"), "ultima-risposta-modello.txt");
+        const saved = await writeFile(path, `Modello: ${args.model}\n\n${err.raw}`, "utf-8").then(() => true, () => false);
+        throw new Error(saved ? `${err.message} La risposta è stata salvata in ${path}` : err.message);
+      }
       throw err;
     } finally {
       currentProposal = null;

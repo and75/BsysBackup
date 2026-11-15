@@ -210,6 +210,8 @@ export interface ReorgPlan {
   proposals: ReorgProposal[];
   /** Proposte scartate perché indicavano cartelle inesistenti o spostamenti impossibili */
   discarded: number;
+  /** true se il modello si è interrotto prima di finire: le proposte possono essere incomplete */
+  truncated: boolean;
 }
 
 /** Esito del controllo rapido dei dispositivi di un backup, fatto senza leggere il contenuto delle cartelle */

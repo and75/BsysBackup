@@ -54,10 +54,11 @@ export interface ChatRequest {
 }
 
 /**
- * Chiede al modello una risposta in JSON e ne restituisce il testo.
+ * Chiede al modello una risposta in JSON e ne restituisce il testo; `truncated` dice se si è
+ * interrotta per aver esaurito lo spazio a disposizione.
  * La risposta arriva a pezzi: così la richiesta non scade mentre un modello lento sta ancora scrivendo.
  */
-export async function chatJson(baseUrl: string, req: ChatRequest): Promise<string> {
+export async function chatJson(baseUrl: string, req: ChatRequest): Promise<{ text: string; truncated: boolean }> {
   let res: Response;
   try {
     res = await fetch(`${baseUrl}/api/chat`, {
@@ -68,6 +69,8 @@ export async function chatJson(baseUrl: string, req: ChatRequest): Promise<strin
         model: req.model,
         stream: true,
         format: req.schema,
+        // I modelli che "ragionano" prima di rispondere consumerebbero lì tutto lo spazio, lasciando la risposta a metà
+        think: false,
         options: { temperature: 0.2, num_ctx: req.contextTokens },
         messages: [
           { role: "system", content: req.system },
@@ -90,12 +93,14 @@ export async function chatJson(baseUrl: string, req: ChatRequest): Promise<strin
 
   let content = "";
   let written = 0;
+  let truncated = false;
   let pending = "";
   const decoder = new TextDecoder();
   const take = (line: string) => {
     if (!line.trim()) return;
-    const part = JSON.parse(line) as { error?: string; message?: { content?: string; thinking?: string } };
+    const part = JSON.parse(line) as { error?: string; done_reason?: string; message?: { content?: string; thinking?: string } };
     if (part.error) throw new Error(`Ollama: ${part.error}`);
+    if (part.done_reason === "length") truncated = true;
     content += part.message?.content ?? "";
     written += (part.message?.content ?? "").length + (part.message?.thinking ?? "").length;
     req.onText?.(written);
@@ -107,5 +112,5 @@ export async function chatJson(baseUrl: string, req: ChatRequest): Promise<strin
     lines.forEach(take);
   }
   take(pending);
-  return content;
+  return { text: content, truncated };
 }

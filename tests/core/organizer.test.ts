@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { SourceAnalysis } from "../../src/core/duplicates";
 import { listModels, ollamaBaseUrl, pickDefaultModel } from "../../src/core/ollama";
-import { describeSource, proposeReorganization, validateProposals } from "../../src/core/organizer";
+import { describeSource, parseReply, proposeReorganization, validateProposals } from "../../src/core/organizer";
 import type { FileEntry } from "../../src/core/types";
 
 const year = (y: number) => new Date(`${y}-06-01T10:00:00Z`).getTime();
@@ -113,10 +113,37 @@ describe("validateProposals", () => {
   });
 });
 
+describe("parseReply", () => {
+  const body = '{"summary":"Tutto in ordine.","proposals":[{"action":"rename","from":"Vecchio","to":"Archivio","reason":"Più \\"chiaro\\" {così}"}]}';
+
+  it("legge una risposta racchiusa in un blocco di codice o preceduta da un ragionamento", () => {
+    for (const text of ["```json\n" + body + "\n```", "<think>Vediamo {le cartelle}…</think>\n" + body, "Ecco la proposta:\n" + body]) {
+      const reply = parseReply(text);
+      expect(reply.summary).toBe("Tutto in ordine.");
+      expect(reply.proposals).toHaveLength(1);
+    }
+  });
+
+  it("da una risposta a metà recupera il commento e le proposte complete, anche con graffe e virgolette nel testo", () => {
+    const reply = parseReply(body.slice(0, -2) + ',{"action":"move","from":"Fo');
+    expect(reply.summary).toBe("Tutto in ordine.");
+    expect(reply.proposals).toEqual([{ action: "rename", from: "Vecchio", to: "Archivio", reason: 'Più "chiaro" {così}' }]);
+  });
+
+  it("rifiuta una risposta da cui non si ricava nulla, conservandone il testo", () => {
+    expect(() => parseReply('{"summ')).toThrow(/Non è stato possibile leggere/);
+    try {
+      parseReply("solo testo");
+    } catch (err) {
+      expect((err as { raw: string }).raw).toBe("solo testo");
+    }
+  });
+});
+
 describe("Ollama", () => {
   let server: Server;
   let baseUrl: string;
-  let lastRequest: { model: string; stream: boolean; format: unknown; options: { num_ctx: number }; messages: { role: string; content: string }[] };
+  let lastRequest: { model: string; stream: boolean; think: boolean; format: unknown; options: { num_ctx: number }; messages: { role: string; content: string }[] };
   let chatReply: string[];
 
   beforeEach(async () => {
@@ -193,18 +220,31 @@ describe("Ollama", () => {
       summary: "Archivio con una cartella di foto copiata.",
       proposals: [{ action: "removeDuplicate", from: "Vecchio/Foto - Copia", to: "Foto", reason: "Copia identica" }],
       discarded: 1,
+      truncated: false,
     });
     expect(written[written.length - 1]).toBe(answer.length);
     expect(lastRequest.model).toBe("gemma2:9b");
     expect(lastRequest.stream).toBe(true);
+    expect(lastRequest.think).toBe(false);
     expect(lastRequest.format).toMatchObject({ type: "object" });
     expect(lastRequest.options.num_ctx).toBeGreaterThanOrEqual(8192);
     expect(lastRequest.messages[1].content).toContain("Vecchio/Foto - Copia");
   });
 
-  it("spiega quando il modello risponde in un formato non valido", async () => {
-    chatReply = [JSON.stringify({ message: { content: "non è JSON" }, done: true })];
-    await expect(proposeReorganization(analysis, { baseUrl, model: "gemma2:9b" })).rejects.toThrow(/formato non valido/);
+  it("spiega quando il modello risponde con un testo libero o non risponde affatto", async () => {
+    chatReply = [JSON.stringify({ message: { content: "Ecco cosa farei io." }, done: true })];
+    await expect(proposeReorganization(analysis, { baseUrl, model: "gemma2:9b" })).rejects.toThrow(/testo libero/);
+    chatReply = [JSON.stringify({ message: { content: "" }, done: true })];
+    await expect(proposeReorganization(analysis, { baseUrl, model: "gemma2:9b" })).rejects.toThrow(/non ha scritto alcuna risposta/);
+  });
+
+  it("recupera le proposte arrivate intere da una risposta interrotta per mancanza di spazio", async () => {
+    const cut = '{"summary":"Archivio disordinato.","proposals":[{"action":"merge","from":"Scarica","to":"Documenti","reason":"Stesso tipo"},{"action":"move","from":"fatt_23","to":"Docu';
+    chatReply = [JSON.stringify({ message: { content: cut }, done: true, done_reason: "length" })];
+    const plan = await proposeReorganization(analysis, { baseUrl, model: "gemma2:9b" });
+    expect(plan.truncated).toBe(true);
+    expect(plan.summary).toBe("Archivio disordinato.");
+    expect(plan.proposals.map((p) => p.from)).toEqual(["Scarica"]);
   });
 
   it("riporta l'errore di Ollama, per esempio un modello non installato", async () => {

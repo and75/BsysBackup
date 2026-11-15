@@ -335,6 +335,7 @@ function reorganizePanel(job: Job): HTMLElement | false {
     plan.summary !== "" && h("p", null, plan.summary),
     plan.proposals.length === 0 && h("p", { class: "muted" }, "Il modello non ha proposto modifiche."),
     plan.proposals.length > 0 && h("ul", { class: "dup-list" }, ...plan.proposals.map(proposalItem)),
+    plan.truncated && h("p", { class: "warn small" }, "Il modello si è interrotto prima di finire: l'elenco può essere incompleto."),
     plan.discarded > 0 &&
       h(
         "p",

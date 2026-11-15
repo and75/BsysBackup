@@ -4,10 +4,10 @@ import { normalizeRelPath, pathKey } from "./router";
 import type { DuplicateGroup, FileEntry, ReorgAction, ReorgPlan, ReorgProposal } from "./types";
 
 /** Quante cartelle descrivere al modello: di più non entrerebbero nel contesto di un modello piccolo */
-const MAX_FOLDERS = 150;
+const MAX_FOLDERS = 100;
 /** Limite in caratteri all'elenco delle cartelle: percorsi molto lunghi riempirebbero il contesto anche con poche righe */
-const MAX_FOLDER_CHARS = 10_000;
-const MAX_DUPLICATE_GROUPS = 20;
+const MAX_FOLDER_CHARS = 6_000;
+const MAX_DUPLICATE_GROUPS = 15;
 const MAX_DUPLICATE_PATHS = 4;
 const MAX_PROPOSALS = 30;
 const CONTEXT_TOKENS = 8192;
@@ -36,7 +36,7 @@ const SCHEMA = {
 };
 
 const SYSTEM = `Sei un assistente che aiuta a riordinare le cartelle di un archivio personale.
-Ricevi l'elenco delle cartelle con il loro contenuto e i duplicati già trovati. Proponi poche modifiche utili e concrete, al massimo 15. Se la struttura è già ordinata, restituisci "proposals" vuoto.
+Ricevi l'elenco delle cartelle con il loro contenuto e i duplicati già trovati. Proponi poche modifiche utili e concrete, al massimo 10. Se la struttura è già ordinata, restituisci "proposals" vuoto.
 
 Azioni possibili:
 - "move": sposta la cartella "from" nel nuovo percorso "to".
@@ -208,6 +208,69 @@ export function validateProposals(raw: unknown, analysis: SourceAnalysis): { pro
   return { proposals, discarded: items.length - proposals.length };
 }
 
+/** La risposta del modello non contiene nulla di utilizzabile; `raw` è ciò che ha scritto, per capire perché */
+export class UnreadableReplyError extends Error {
+  constructor(message: string, readonly raw: string) {
+    super(message);
+  }
+}
+
+/** Gli oggetti JSON completi presenti in `text`, anche se l'elenco che li contiene è rimasto a metà */
+function completeObjects(text: string): unknown[] {
+  const found: unknown[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (char === "\\") i++;
+      else if (char === '"') inString = false;
+    } else if (char === '"') inString = true;
+    else if (char === "{") {
+      if (depth++ === 0) start = i;
+    } else if (char === "}" && depth > 0 && --depth === 0) {
+      try {
+        found.push(JSON.parse(text.slice(start, i + 1)));
+      } catch {}
+    }
+  }
+  return found;
+}
+
+/**
+ * Legge la risposta del modello anche quando non è JSON pulito: i modelli locali a volte la
+ * racchiudono in un blocco di codice, la fanno precedere da un ragionamento o la lasciano a metà.
+ */
+export function parseReply(text: string): { summary: string; proposals: unknown[] } {
+  const cleaned = text.replace(/<think>[\s\S]*?(<\/think>|$)/g, "");
+  const open = cleaned.indexOf("{");
+  if (open === -1) {
+    throw new UnreadableReplyError(
+      cleaned.trim() === "" ? "Il modello non ha scritto alcuna risposta. Riprova, oppure scegli un altro modello." : "Il modello ha risposto con un testo libero invece che con un elenco di proposte. Riprova, oppure scegli un altro modello.",
+      text
+    );
+  }
+  const body = cleaned.slice(open);
+  try {
+    const reply = JSON.parse(body.slice(0, body.lastIndexOf("}") + 1)) as { summary?: unknown; proposals?: unknown };
+    return { summary: typeof reply?.summary === "string" ? reply.summary.trim() : "", proposals: Array.isArray(reply?.proposals) ? reply.proposals : [] };
+  } catch {}
+
+  // Risposta interrotta o malformata: si recupera ciò che è arrivato intero
+  const summaryMatch = /"summary"\s*:\s*("(?:[^"\\]|\\.)*")/.exec(body);
+  let summary = "";
+  try {
+    if (summaryMatch) summary = (JSON.parse(summaryMatch[1]) as string).trim();
+  } catch {}
+  const listStart = body.indexOf("[", Math.max(0, body.indexOf('"proposals"')));
+  const proposals = listStart === -1 ? [] : completeObjects(body.slice(listStart + 1));
+  if (summary === "" && proposals.length === 0) {
+    throw new UnreadableReplyError("Non è stato possibile leggere la risposta del modello. Riprova, oppure scegli un altro modello.", text);
+  }
+  return { summary, proposals };
+}
+
 /**
  * Chiede al modello locale come riordinare la sorgente e restituisce le sole proposte applicabili.
  * Non tocca nulla sul disco: al modello vanno i nomi e i conteggi delle cartelle, non il contenuto dei file.
@@ -216,7 +279,7 @@ export async function proposeReorganization(
   analysis: SourceAnalysis,
   opts: { baseUrl: string; model: string; signal?: AbortSignal; onText?: (chars: number) => void }
 ): Promise<ReorgPlan> {
-  const text = await chatJson(opts.baseUrl, {
+  const { text, truncated } = await chatJson(opts.baseUrl, {
     model: opts.model,
     system: SYSTEM,
     prompt: describeSource(analysis),
@@ -226,12 +289,7 @@ export async function proposeReorganization(
     onText: opts.onText,
   });
 
-  let reply: { summary?: unknown; proposals?: unknown };
-  try {
-    reply = JSON.parse(text) as typeof reply;
-  } catch {
-    throw new Error("Il modello ha risposto in un formato non valido. Riprova, oppure scegli un modello più grande.");
-  }
-  const { proposals, discarded } = validateProposals(reply?.proposals, analysis);
-  return { model: opts.model, summary: typeof reply?.summary === "string" ? reply.summary.trim() : "", proposals, discarded };
+  const reply = parseReply(text);
+  const { proposals, discarded } = validateProposals(reply.proposals, analysis);
+  return { model: opts.model, summary: reply.summary, proposals, discarded, truncated };
 }
