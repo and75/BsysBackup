@@ -3,8 +3,57 @@ import { isReachable, pathExists, scanDirectory } from "./scanner";
 import { listDestinationRoots, planRegionCopies, resolveRegionPath } from "./router";
 import { buildDiff } from "./differ";
 import { copyPlannedFiles, ensureDir, isWindows, runRobocopy } from "./copier";
-import { verifyCopiedFile } from "./verifier";
+import { quickCheck, verifyPlannedFiles } from "./verifier";
 import { writeReportToDisk } from "./report";
+
+const PROGRESS_POLL_MS = 1500;
+const PROGRESS_POLL_CONCURRENCY = 8;
+
+/**
+ * Segue l'avanzamento di una copia Robocopy controllando direttamente i file in destinazione,
+ * a intervalli, invece di contare le righe stampate da Robocopy: quando l'output di un
+ * programma a riga di comando viene reindirizzato (come qui), Windows lo mette in un buffer e
+ * lo consegna a scatti imprevedibili, non in tempo reale — contarne le righe dà un avanzamento
+ * che "si blocca" e poi salta avanti tutto insieme. Il controllo dei file è solo informativo:
+ * l'esito vero di ogni file resta deciso dalla verifica che segue la copia.
+ */
+export function watchCopyProgress(
+  files: PlannedFile[],
+  opts: { signal?: AbortSignal; intervalMs?: number; concurrency?: number },
+  onTick: (done: number) => void
+): { stop: () => void } {
+  const intervalMs = opts.intervalMs ?? PROGRESS_POLL_MS;
+  const concurrency = opts.concurrency ?? PROGRESS_POLL_CONCURRENCY;
+  let stopped = false;
+  const pending = new Set(files);
+
+  async function pass(): Promise<void> {
+    const candidates = Array.from(pending);
+    let index = 0;
+    async function worker(): Promise<void> {
+      while (index < candidates.length && !stopped) {
+        const file = candidates[index++];
+        if (await quickCheck(file)) pending.delete(file);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, candidates.length)) }, () => worker()));
+    if (!stopped) onTick(files.length - pending.size);
+  }
+
+  (async () => {
+    while (!stopped && pending.size > 0 && !opts.signal?.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      if (stopped || opts.signal?.aborted) break;
+      await pass();
+    }
+  })();
+
+  return {
+    stop: () => {
+      stopped = true;
+    },
+  };
+}
 
 /**
  * Dice se la sorgente e i dischi di destinazione sono collegati, senza scansionare nulla:
@@ -150,24 +199,31 @@ export async function runBackup(job: Job, opts: RunBackupOptions): Promise<Backu
   if (total > 0) reportCopy();
 
   if (isWindows) {
-    const filesPerRegion = new Map<string, number>();
+    const filesByRegion = new Map<string, PlannedFile[]>();
     for (const f of copyable) {
       const key = resolveRegionPath(job, f.relPath);
-      filesPerRegion.set(key, (filesPerRegion.get(key) ?? 0) + 1);
+      const list = filesByRegion.get(key) ?? [];
+      list.push(f);
+      filesByRegion.set(key, list);
     }
     for (const region of planRegionCopies(job)) {
-      const regionTotal = filesPerRegion.get(region.relativePath) ?? 0;
-      if (regionTotal === 0 || signal?.aborted) continue;
+      const regionFiles = filesByRegion.get(region.relativePath) ?? [];
+      if (regionFiles.length === 0 || signal?.aborted) continue;
       const doneBefore = copyDone;
-      let listed = 0;
-      const result = await runRobocopy(region.sourceDir, region.destDir, region.excludeDirs, {
-        signal,
-        onFile: () => {
-          // Robocopy elenca anche i tentativi falliti: il contatore non supera i file attesi
-          copyDone = doneBefore + Math.min(++listed, regionTotal);
-          reportCopy();
-        },
+
+      const watcher = watchCopyProgress(regionFiles, { signal }, (doneInRegion) => {
+        copyDone = doneBefore + doneInRegion;
+        reportCopy();
       });
+      const result = await runRobocopy(region.sourceDir, region.destDir, region.excludeDirs, { signal });
+      watcher.stop();
+
+      // La verifica che segue dirà quanti sono davvero arrivati; qui l'avanzamento si ferma
+      // dove si trovava se il backup è stato annullato, invece di saltare al 100%.
+      if (!result.cancelled) {
+        copyDone = doneBefore + regionFiles.length;
+        reportCopy();
+      }
       if (!result.ok && !result.cancelled) {
         warnings.push(`Robocopy ha segnalato errori (codice ${result.exitCode ?? "n/d"}) copiando ${region.sourceDir} in ${region.destDir}`);
       }
@@ -195,21 +251,34 @@ export async function runBackup(job: Job, opts: RunBackupOptions): Promise<Backu
   const cancelledDuringCopy = Boolean(signal?.aborted);
 
   // La verifica legge la destinazione dopo la copia, chiunque l'abbia eseguita: è ciò che
-  // distingue "copiato" da "il copiatore non ha dato errori".
+  // distingue "copiato" da "il copiatore non ha dato errori". Parallela: fatta un file alla
+  // volta può richiedere minuti su un disco esterno con molti file, senza che nulla di utile
+  // avvenga nel frattempo. Il solo controllo di dimensione e data ammette molta concorrenza;
+  // con l'hash si rilegge il contenuto due volte per file, quindi se ne fanno meno insieme.
   let verifyDone = 0;
   let totalInterrupted = 0;
-  for (const file of copyable) {
-    const report = destReports.get(file.destinationRoot) as DestinationGroupReport;
-    const copyError = copyErrors.get(file.relPath);
-    const result: CopyResult = copyError
-      ? { relPath: file.relPath, destPath: file.destPath, ok: false, verified: false, error: copyError }
-      : await verifyCopiedFile(file, { useHash: useHash && !signal?.aborted, knownSourceHash: sourceHashes.get(file.relPath) });
 
+  const recordResult = (file: PlannedFile, result: CopyResult): void => {
+    const report = destReports.get(file.destinationRoot) as DestinationGroupReport;
     if (result.ok) report.copied.push(result);
-    else if (cancelledDuringCopy && !copyError) totalInterrupted++;
+    else if (cancelledDuringCopy) totalInterrupted++;
     else report.failed.push(result);
     opts.onProgress?.({ phase: "verify", done: ++verifyDone, total, relPath: file.relPath });
+  };
+
+  // I file con un errore di copia già noto (solo copia file-per-file, mai Robocopy) non vanno riletti
+  const toVerify = copyable.filter((f) => !copyErrors.has(f.relPath));
+  for (const f of copyable) {
+    const error = copyErrors.get(f.relPath);
+    if (error) recordResult(f, { relPath: f.relPath, destPath: f.destPath, ok: false, verified: false, error });
   }
+
+  await verifyPlannedFiles(toVerify, {
+    useHash: useHash && !signal?.aborted,
+    concurrency: useHash ? 4 : 16,
+    knownSourceHashes: sourceHashes,
+    onFile: recordResult,
+  });
 
   const destinations = Array.from(destReports.values());
   const finishedAt = new Date().toISOString();

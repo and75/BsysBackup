@@ -33,3 +33,42 @@ export async function verifyCopiedFile(
     return fail(e?.code === "ENOENT" ? "file assente in destinazione dopo la copia" : String(e?.message ?? err));
   }
 }
+
+/** Controllo rapido (solo size+mtime, senza hash, senza messaggi d'errore): usato per l'avanzamento durante la copia */
+export async function quickCheck(file: PlannedFile): Promise<boolean> {
+  try {
+    const destStat = await stat(file.destPath);
+    return destStat.size === file.size && !mtimeDiffers(destStat.mtimeMs, file.mtimeMs);
+  } catch {
+    return false;
+  }
+}
+
+export interface VerifyManyOptions {
+  useHash: boolean;
+  concurrency: number;
+  knownSourceHashes?: Map<string, string>;
+  onFile?: (file: PlannedFile, result: CopyResult) => void;
+}
+
+/**
+ * Verifica molti file in parallelo. Il solo controllo di dimensione e data ammette una
+ * concorrenza alta; con l'hash si rilegge il contenuto due volte per file, quindi se ne
+ * fanno meno insieme per non competere troppo con un disco esterno lento.
+ */
+export async function verifyPlannedFiles(files: PlannedFile[], opts: VerifyManyOptions): Promise<Map<string, CopyResult>> {
+  const results = new Map<string, CopyResult>();
+  let index = 0;
+
+  async function worker(): Promise<void> {
+    while (index < files.length) {
+      const file = files[index++];
+      const result = await verifyCopiedFile(file, { useHash: opts.useHash, knownSourceHash: opts.knownSourceHashes?.get(file.relPath) });
+      results.set(file.relPath, result);
+      opts.onFile?.(file, result);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.max(1, opts.concurrency) }, () => worker()));
+  return results;
+}
