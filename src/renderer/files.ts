@@ -1,6 +1,6 @@
 /// <reference path="./global.d.ts" />
-import type { AiStatus, ApplyOutcome, ApplyResult, DuplicateGroup, DuplicateProgress, DuplicateSummary, ReorgAction, ReorgPlan, ReorgProposal } from "../core/types";
-import { analyze, errorMessage, guard, hooks, render, replaceJob, state } from "./app.js";
+import type { AiProvider, AiStatus, ApplyOutcome, ApplyResult, DuplicateGroup, DuplicateProgress, DuplicateSummary, ReorgAction, ReorgPlan, ReorgProposal } from "../core/types";
+import { analyze, errorMessage, guard, hooks, navigate, render, replaceJob, state } from "./app.js";
 import { fileCount, formatBytes, formatNumber, h } from "./dom.js";
 
 type DuplicatesState = { status: "ready"; summary: DuplicateSummary } | { status: "error"; message: string };
@@ -17,9 +17,11 @@ export const files = {
   search: null as { progress: DuplicateProgress | null; cancelling: boolean } | null,
   /** Copie da eliminare spuntate dall'utente: indice del gruppo → percorsi */
   copies: new Map<number, Set<string>>(),
-  /** Ollama e i suoi modelli; null finché non è stato interrogato */
+  /** Il fornitore scelto e i suoi modelli; null finché non è stato interrogato */
   ai: null as AiStatus | null,
   aiChecking: false,
+  /** Chiave API in corso di digitazione: resta qui solo finché non viene salvata */
+  keyDraft: "",
   plan: null as PlanState | null,
   /** `chars`: caratteri scritti finora dal modello, 0 finché sta ancora leggendo l'elenco */
   proposal: null as { chars: number; cancelling: boolean } | null,
@@ -133,6 +135,20 @@ async function checkAi(): Promise<void> {
   render();
   try {
     files.ai = await window.api.aiStatus();
+  } finally {
+    files.aiChecking = false;
+    render();
+  }
+}
+
+/** Cambia fornitore, salva o toglie una chiave: in ogni caso lo stato che torna è quello nuovo */
+async function updateAi(change: () => Promise<AiStatus>): Promise<void> {
+  if (files.aiChecking || files.proposal) return;
+  files.aiChecking = true;
+  render();
+  try {
+    files.ai = await change();
+    files.keyDraft = "";
   } finally {
     files.aiChecking = false;
     render();
@@ -507,35 +523,56 @@ export function renderDuplicates(): HTMLElement[] {
 
 // ---------- Riorganizza con AI ----------
 
-/** Stato di Ollama e scelta del modello: lo stesso riquadro serve in Riorganizza e nelle Impostazioni */
+/** Come presentare ogni fornitore; `company` è chi riceve i dati quando il modello non gira su questo computer */
+const PROVIDERS: Record<AiProvider, { name: string; company: string | null; keysAt: string }> = {
+  ollama: { name: "Ollama, su questo computer", company: null, keysAt: "" },
+  anthropic: { name: "Anthropic (Claude)", company: "Anthropic", keysAt: "console.anthropic.com" },
+  openai: { name: "OpenAI (GPT)", company: "OpenAI", keysAt: "platform.openai.com" },
+  google: { name: "Google (Gemini)", company: "Google", keysAt: "aistudio.google.com" },
+};
+
+function modelLabel(model: AiStatus["models"][number]): string {
+  const details = [model.parameterSize, model.size > 0 && formatBytes(model.size)].filter(Boolean).join(", ");
+  const name = model.label && model.label !== model.name ? `${model.label} (${model.name})` : model.name;
+  return details ? `${name} — ${details}` : name;
+}
+
+/** Scelta del modello del fornitore attivo, oppure il motivo per cui non si può ancora usare */
 function modelPicker(): { ready: boolean; content: Part[] } {
   const { ai } = files;
-  const recheck = h("button", { type: "button", class: "btn btn-small", disabled: files.aiChecking, onclick: guard(checkAi) }, "Ricontrolla");
-  if (!ai) return { ready: false, content: [h("p", { class: "muted small" }, "Ricerca dei modelli di intelligenza artificiale installati su questo computer…")] };
+  if (!ai) return { ready: false, content: [h("p", { class: "muted small" }, "Ricerca dei modelli di intelligenza artificiale disponibili…")] };
+  const { company } = PROVIDERS[ai.provider];
+  if (ai.error) return { ready: false, content: [h("p", { class: "warn" }, ai.error)] };
+  if (company && !ai.hasKey) return { ready: false, content: [h("p", { class: "muted" }, `Per usare i modelli di ${company} serve una chiave API.`)] };
   if (!ai.available) {
     return {
       ready: false,
       content: [
-        h("p", { class: "muted" }, "Serve Ollama, un programma gratuito che esegue i modelli di intelligenza artificiale su questo computer. Non risulta in esecuzione."),
+        h("p", { class: "muted" }, "Ollama è un programma gratuito che esegue i modelli di intelligenza artificiale su questo computer. Non risulta in esecuzione."),
         h("p", { class: "muted small" }, "Installalo da ollama.com, scarica un modello (per esempio con il comando: ollama pull gemma2:9b) e premi Ricontrolla."),
-        h("div", { class: "actions" }, recheck),
       ],
     };
   }
   if (ai.models.length === 0) {
-    return {
-      ready: false,
-      content: [h("p", { class: "muted" }, "Ollama è in esecuzione ma non ha modelli installati. Scaricane uno (per esempio con il comando: ollama pull gemma2:9b) e premi Ricontrolla."), h("div", { class: "actions" }, recheck)],
-    };
+    const none = company ? `${company} non offre a questa chiave modelli adatti.` : "Ollama è in esecuzione ma non ha modelli installati. Scaricane uno (per esempio con il comando: ollama pull gemma2:9b) e premi Ricontrolla.";
+    return { ready: false, content: [h("p", { class: "muted" }, none)] };
   }
-  const select = h(
-    "select",
-    { class: "select", "aria-label": "Modello", disabled: files.proposal !== null },
-    ...ai.models.map((m) => h("option", { value: m.name }, `${m.name} — ${[m.parameterSize, formatBytes(m.size)].filter(Boolean).join(", ")}`))
-  );
+  const select = h("select", { class: "select", "aria-label": "Modello", disabled: files.proposal !== null }, ...ai.models.map((m) => h("option", { value: m.name }, modelLabel(m))));
   select.value = ai.selected ?? ai.models[0].name;
   select.addEventListener("change", guard(() => selectAiModel(select.value)));
   return { ready: true, content: [h("label", { class: "plan-model" }, h("span", { class: "muted small" }, "Modello"), select)] };
+}
+
+function recheckButton(): HTMLElement {
+  return h("button", { type: "button", class: "btn btn-small", disabled: files.aiChecking, onclick: guard(checkAi) }, "Ricontrolla");
+}
+
+/** Dove va a finire l'elenco delle cartelle: è la cosa che l'utente deve sapere prima di chiedere una proposta */
+function privacyNote(): HTMLElement {
+  const company = files.ai ? PROVIDERS[files.ai.provider].company : null;
+  return company
+    ? h("p", { class: "warn small" }, `I nomi delle cartelle e i conteggi dei file vengono inviati al servizio di ${company} per ottenere la proposta. Il contenuto dei file non viene mai inviato.`)
+    : h("p", { class: "muted small" }, "Il modello gira su questo computer: i nomi delle tue cartelle non escono dal computer.");
 }
 
 function proposalItem(proposal: ReorgProposal, index: number): HTMLElement {
@@ -585,17 +622,25 @@ function reorganizePanel(): HTMLElement {
   if (files.proposal) return panel(title, cancelButton(files.proposal.cancelling, cancelProposal), proposalRunning());
 
   const picker = modelPicker();
-  if (!picker.ready) return panel(title, false, ...picker.content);
+  if (!picker.ready) {
+    return panel(
+      title,
+      files.ai?.provider === "ollama" && recheckButton(),
+      ...picker.content,
+      h("div", { class: "actions" }, h("button", { type: "button", class: "btn", onclick: () => navigate({ name: "settings" }) }, "Apri le Impostazioni"))
+    );
+  }
   const result = files.plan;
   const start = h("button", { type: "button", class: result ? "btn btn-small" : "btn btn-small btn-primary", disabled: busy(), onclick: guard(propose) }, result ? "Proponi di nuovo" : "Proponi");
   const controls = h("div", { class: "plan-controls" }, ...picker.content, start);
 
-  if (result?.status === "error") return panel(title, false, controls, h("p", { class: "warn" }, result.message));
+  if (result?.status === "error") return panel(title, false, privacyNote(), controls, h("p", { class: "warn" }, result.message));
   if (result?.status !== "ready") {
     return panel(
       title,
       false,
-      h("p", { class: "muted small" }, "Un modello in esecuzione su questo computer legge i nomi delle cartelle e suggerisce come riordinarle. Nulla esce dal computer, e nulla viene spostato senza la tua conferma."),
+      h("p", { class: "muted small" }, "Un modello di intelligenza artificiale legge i nomi delle cartelle e suggerisce come riordinarle. Nulla viene spostato senza la tua conferma."),
+      privacyNote(),
       h(
         "p",
         { class: "muted small" },
@@ -612,6 +657,7 @@ function reorganizePanel(): HTMLElement {
   return panel(
     title,
     false,
+    privacyNote(),
     controls,
     plan.summary !== "" && h("p", null, plan.summary),
     plan.proposals.length === 0 && h("p", { class: "muted" }, "Il modello non ha proposto modifiche."),
@@ -629,8 +675,51 @@ export function renderReorganize(): HTMLElement[] {
 
 // ---------- Impostazioni ----------
 
+/** Riga della chiave API di un servizio cloud: la si inserisce una volta, poi non viene più mostrata */
+function keyRow(ai: AiStatus): Part {
+  const { company, keysAt } = PROVIDERS[ai.provider];
+  if (!company) return false;
+  if (ai.keyFromEnvironment) return h("p", { class: "muted small" }, `Chiave API di ${company}: trovata in una variabile d'ambiente di questo computer.`);
+  if (ai.hasKey) {
+    return h(
+      "div",
+      { class: "plan-controls" },
+      h("p", { class: "plan-model" }, h("span", { class: "muted small" }, "Chiave API"), h("span", null, "Salvata su questo computer, cifrata")),
+      h("button", { type: "button", class: "btn btn-small", disabled: files.aiChecking || files.proposal !== null, onclick: guard(() => updateAi(() => window.api.removeAiKey({ provider: ai.provider }))) }, "Rimuovi")
+    );
+  }
+  const input = h("input", { type: "password", class: "select", autocomplete: "off", spellcheck: "false", "aria-label": `Chiave API di ${company}`, placeholder: "Incolla qui la chiave" }) as HTMLInputElement;
+  input.value = files.keyDraft;
+  const save = h("button", { type: "button", class: "btn btn-small btn-primary", disabled: files.aiChecking || files.keyDraft.trim() === "", onclick: guard(() => updateAi(() => window.api.setAiKey({ provider: ai.provider, key: files.keyDraft }))) }, "Salva");
+  input.addEventListener("input", () => {
+    files.keyDraft = input.value;
+    save.disabled = files.aiChecking || input.value.trim() === "";
+  });
+  return h(
+    "div",
+    { class: "stack" },
+    h("div", { class: "plan-controls" }, h("label", { class: "plan-model" }, h("span", { class: "muted small" }, "Chiave API"), input), save),
+    h("p", { class: "muted small" }, `La chiave si crea nel tuo account su ${keysAt}. Viene salvata su questo computer cifrata da Windows, e l'app non la mostra più.`)
+  );
+}
+
+function providerChoice(ai: AiStatus): HTMLElement {
+  return h(
+    "div",
+    { class: "provider-list", role: "radiogroup", "aria-label": "Fornitore" },
+    ...(Object.keys(PROVIDERS) as AiProvider[]).map((provider) => {
+      const radio = h("input", { type: "radio", name: "provider", value: provider, disabled: files.aiChecking || files.proposal !== null }) as HTMLInputElement;
+      radio.checked = ai.provider === provider;
+      radio.addEventListener("change", guard(() => updateAi(() => window.api.setAiProvider({ provider }))));
+      return h("label", { class: "provider" }, radio, h("span", null, PROVIDERS[provider].name));
+    })
+  );
+}
+
 export function renderSettings(): HTMLElement[] {
+  const { ai } = files;
   const picker = modelPicker();
+  const company = ai ? PROVIDERS[ai.provider].company : null;
   return [
     pageHeader("Impostazioni"),
     h(
@@ -638,8 +727,12 @@ export function renderSettings(): HTMLElement[] {
       { class: "page narrow-wide" },
       panel(
         "Intelligenza artificiale",
-        picker.ready && h("button", { type: "button", class: "btn btn-small", disabled: files.aiChecking, onclick: guard(checkAi) }, "Ricontrolla"),
-        h("p", { class: "muted small" }, "Il modello usato da «Riorganizza con AI». Gira su questo computer tramite Ollama: i nomi delle tue cartelle non escono dal computer."),
+        recheckButton(),
+        h("p", { class: "muted small" }, "Chi esegue il modello usato da «Riorganizza con AI»: un programma su questo computer, oppure un servizio a cui accedi con la tua chiave API."),
+        ai !== null && providerChoice(ai),
+        ai !== null && privacyNote(),
+        company !== null && h("p", { class: "muted small" }, `L'uso del servizio viene addebitato da ${company} sul tuo account, secondo le sue tariffe.`),
+        ai !== null && keyRow(ai),
         ...picker.content
       ),
       panel("Informazioni", false, h("p", null, `BsysBackup, versione ${window.api.version || "sconosciuta"}`))

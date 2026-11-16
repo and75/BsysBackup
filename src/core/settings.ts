@@ -1,9 +1,16 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { AiProvider } from "./types";
 
 export interface Settings {
-  /** Modello di Ollama scelto per le proposte di riorganizzazione */
+  /** Modello di Ollama scelto prima che esistessero gli altri fornitori: vale come scelta per Ollama */
   aiModel?: string;
+  /** Chi esegue il modello per le proposte di riorganizzazione; in mancanza, Ollama */
+  aiProvider?: AiProvider;
+  /** Modello scelto per ciascun fornitore */
+  aiModels?: Partial<Record<AiProvider, string>>;
+  /** Chiavi API dei servizi cloud, cifrate dal sistema operativo e codificate in base64: mai in chiaro */
+  apiKeys?: Partial<Record<AiProvider, string>>;
   /** Ultima cartella aperta in Gestione file */
   lastFolder?: string;
 }

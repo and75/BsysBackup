@@ -1,5 +1,5 @@
 import type { SourceAnalysis } from "./duplicates";
-import { chatJson } from "./ollama";
+import type { AiReply, AiRequest } from "./ai";
 import { normalizeRelPath, pathKey } from "./router";
 import type { DuplicateGroup, FileEntry, ReorgAction, ReorgPlan, ReorgProposal } from "./types";
 
@@ -10,7 +10,6 @@ const MAX_FOLDER_CHARS = 6_000;
 const MAX_DUPLICATE_GROUPS = 15;
 const MAX_DUPLICATE_PATHS = 4;
 const MAX_PROPOSALS = 30;
-const CONTEXT_TOKENS = 8192;
 
 const ACTIONS: ReorgAction[] = ["move", "merge", "rename", "removeDuplicate"];
 
@@ -29,10 +28,12 @@ const SCHEMA = {
           reason: { type: "string" },
         },
         required: ["action", "from", "to", "reason"],
+        additionalProperties: false,
       },
     },
   },
   required: ["summary", "proposals"],
+  additionalProperties: false,
 };
 
 const SYSTEM = `Sei un assistente che aiuta a riordinare le cartelle di un archivio personale.
@@ -276,19 +277,19 @@ export function parseReply(text: string): { summary: string; proposals: unknown[
 }
 
 /**
- * Chiede al modello locale come riordinare la sorgente e restituisce le sole proposte applicabili.
+ * Chiede al modello come riordinare la sorgente e restituisce le sole proposte applicabili.
  * Non tocca nulla sul disco: al modello vanno i nomi e i conteggi delle cartelle, non il contenuto dei file.
+ * `ask` è il fornitore scelto: Ollama su questo computer o un servizio cloud.
  */
 export async function proposeReorganization(
   analysis: SourceAnalysis,
-  opts: { baseUrl: string; model: string; signal?: AbortSignal; onText?: (chars: number) => void }
+  opts: { model: string; ask: (request: AiRequest) => Promise<AiReply>; signal?: AbortSignal; onText?: (chars: number) => void }
 ): Promise<ReorgPlan> {
-  const { text, truncated } = await chatJson(opts.baseUrl, {
+  const { text, truncated } = await opts.ask({
     model: opts.model,
     system: SYSTEM,
     prompt: describeSource(analysis),
     schema: SCHEMA,
-    contextTokens: CONTEXT_TOKENS,
     signal: opts.signal,
     onText: opts.onText,
   });

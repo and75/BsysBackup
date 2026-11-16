@@ -1,17 +1,19 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, type WebContents } from "electron";
 import { basename, dirname, join } from "node:path";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { createJob, deleteJob, followReorganizationAt, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
 import { applyProposals, formatApplyLog } from "../core/applier";
 import { analyzeSource, listSource, summarizeDuplicates, type SourceAnalysis } from "../core/duplicates";
-import { listModels, ollamaBaseUrl, pickDefaultModel } from "../core/ollama";
+import { askProvider, isCloud, listProviderModels, PROVIDER_ENV, type AiAccess } from "../core/ai";
+import { ANTHROPIC_DEFAULT_MODEL } from "../core/anthropic";
+import { pickDefaultModel } from "../core/ollama";
 import { proposeReorganization, UnreadableReplyError } from "../core/organizer";
-import { loadSettings, saveSettings } from "../core/settings";
+import { loadSettings, saveSettings, type Settings } from "../core/settings";
 import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
 import { toAbs } from "../core/router";
-import type { AiStatus, ApplyResult, DuplicateProgress, Job, ProgressInfo, ReorgPlan, ReorgProposal } from "../core/types";
+import type { AiModel, AiProvider, AiStatus, ApplyResult, DuplicateProgress, Job, ProgressInfo, ReorgPlan, ReorgProposal } from "../core/types";
 
 let currentRun: AbortController | null = null;
 let currentSearch: AbortController | null = null;
@@ -74,6 +76,50 @@ app.on("before-quit", () => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+const PROVIDERS: AiProvider[] = ["ollama", "anthropic", "openai", "google"];
+
+/**
+ * Chiave e indirizzo con cui raggiungere un servizio cloud: la chiave salvata nell'app, oppure quella
+ * che l'utente ha già nell'ambiente per gli strumenti ufficiali del fornitore. null se non c'è chiave.
+ */
+function accessFor(provider: AiProvider, settings: Settings): { access: AiAccess | null; fromEnvironment: boolean } {
+  if (!isCloud(provider)) return { access: null, fromEnvironment: false };
+  const env = PROVIDER_ENV[provider];
+  const baseUrl = process.env[env.baseUrl] || undefined;
+  const stored = settings.apiKeys?.[provider];
+  if (stored && safeStorage.isEncryptionAvailable()) {
+    try {
+      return { access: { apiKey: safeStorage.decryptString(Buffer.from(stored, "base64")), baseUrl }, fromEnvironment: false };
+    } catch {
+      // Chiave cifrata da un altro utente o su un altro computer: è come se non ci fosse
+    }
+  }
+  const fromEnv = env.key.map((name) => process.env[name]).find((value) => value);
+  return fromEnv ? { access: { apiKey: fromEnv, baseUrl }, fromEnvironment: true } : { access: null, fromEnvironment: false };
+}
+
+/** Stato del fornitore scelto: se è utilizzabile, con quali modelli e quale è selezionato */
+async function aiStatus(): Promise<AiStatus> {
+  const settings = await loadSettings(settingsPath());
+  const provider = settings.aiProvider ?? "ollama";
+  const { access, fromEnvironment } = accessFor(provider, settings);
+  const status: AiStatus = { provider, available: false, models: [], selected: null, hasKey: access !== null, keyFromEnvironment: fromEnvironment, error: null };
+  if (isCloud(provider) && !access) return status;
+
+  let models: AiModel[] | null;
+  try {
+    models = await listProviderModels(provider, access);
+  } catch (err) {
+    return { ...status, error: (err as Error).message };
+  }
+  if (!models) return status;
+
+  const saved = settings.aiModels?.[provider] ?? (provider === "ollama" ? settings.aiModel : undefined);
+  const has = (name: string | undefined) => (name !== undefined && models.some((m) => m.name === name) ? name : null);
+  const suggested = provider === "ollama" ? pickDefaultModel(models, totalmem()) : (has(provider === "anthropic" ? ANTHROPIC_DEFAULT_MODEL : undefined) ?? models[0]?.name ?? null);
+  return { ...status, available: true, models, selected: has(saved) ?? suggested };
+}
 
 function workspaceFor(root: string): Workspace {
   if (workspace?.root !== root) workspace = { root };
@@ -272,16 +318,37 @@ function registerIpcHandlers(): void {
     return applyToFolder(event.sender, args.root, proposals);
   });
 
-  ipcMain.handle("ai:status", async (): Promise<AiStatus> => {
-    const models = await listModels(ollamaBaseUrl());
-    if (!models) return { available: false, models: [], selected: null };
-    const saved = (await loadSettings(settingsPath())).aiModel;
-    const selected = models.some((m) => m.name === saved) ? (saved as string) : pickDefaultModel(models, totalmem());
-    return { available: true, models, selected };
+  ipcMain.handle("ai:status", () => aiStatus());
+
+  ipcMain.handle("ai:setProvider", async (_e, args: { provider: AiProvider }) => {
+    if (!PROVIDERS.includes(args.provider)) throw new Error("Fornitore non valido.");
+    await saveSettings(settingsPath(), { ...(await loadSettings(settingsPath())), aiProvider: args.provider });
+    return aiStatus();
+  });
+
+  // La chiave arriva una volta sola dall'interfaccia, viene cifrata dal sistema operativo e non torna mai indietro
+  ipcMain.handle("ai:setKey", async (_e, args: { provider: AiProvider; key: string }) => {
+    const key = args.key.trim();
+    if (!isCloud(args.provider) || key === "") throw new Error("Chiave API non valida.");
+    if (!safeStorage.isEncryptionAvailable()) throw new Error("Questo sistema non permette di salvare la chiave in modo protetto.");
+    const settings = await loadSettings(settingsPath());
+    const apiKeys = { ...settings.apiKeys, [args.provider]: safeStorage.encryptString(key).toString("base64") };
+    await saveSettings(settingsPath(), { ...settings, apiKeys });
+    return aiStatus();
+  });
+
+  ipcMain.handle("ai:removeKey", async (_e, args: { provider: AiProvider }) => {
+    const settings = await loadSettings(settingsPath());
+    const apiKeys = { ...settings.apiKeys };
+    delete apiKeys[args.provider];
+    await saveSettings(settingsPath(), { ...settings, apiKeys });
+    return aiStatus();
   });
 
   ipcMain.handle("ai:selectModel", async (_e, args: { model: string }) => {
-    await saveSettings(settingsPath(), { ...(await loadSettings(settingsPath())), aiModel: args.model });
+    const settings = await loadSettings(settingsPath());
+    const provider = settings.aiProvider ?? "ollama";
+    await saveSettings(settingsPath(), { ...settings, aiModels: { ...settings.aiModels, [provider]: args.model } });
   });
 
   ipcMain.handle("ai:propose", async (event, args: { root: string; model: string }) => {
@@ -303,7 +370,15 @@ function registerIpcHandlers(): void {
       // Se i duplicati sono già stati cercati la proposta ne tiene conto; altrimenti basta l'elenco dei file
       const analysis = space.analysis ?? (await listSource(args.root));
       proposal.signal.throwIfAborted();
-      const plan = await proposeReorganization(analysis, { baseUrl: ollamaBaseUrl(), model: args.model, signal: proposal.signal, onText: sendText });
+      const settings = await loadSettings(settingsPath());
+      const provider = settings.aiProvider ?? "ollama";
+      const { access } = accessFor(provider, settings);
+      const plan = await proposeReorganization(analysis, {
+        model: args.model,
+        ask: (request) => askProvider(provider, access, request),
+        signal: proposal.signal,
+        onText: sendText,
+      });
       if (workspace === space) space.plan = plan;
       return plan;
     } catch (err) {

@@ -88,6 +88,11 @@ button, input { font: inherit; color: inherit; }
 .nav-sub { padding-left: 24px; }
 .nav-group { margin-top: 10px; padding: 6px 12px 4px; font-size: 12px; color: var(--muted); }
 .page.narrow-wide { max-width: 900px; }
+.provider-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.provider { min-height: 44px; padding: 0 12px; display: flex; align-items: center; gap: 10px; background: var(--surface-2); border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
+.provider:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.provider input { width: 16px; height: 16px; margin: 0; flex-shrink: 0; }
+input.select::placeholder { color: var(--muted); }
 .shortcuts { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
 .dup-copy { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
 .dup-copy input { width: 16px; height: 16px; margin: 2px 0 0; flex-shrink: 0; }

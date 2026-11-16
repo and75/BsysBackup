@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { SourceAnalysis } from "../../src/core/duplicates";
-import { listModels, ollamaBaseUrl, pickDefaultModel } from "../../src/core/ollama";
+import { chatJson, listModels, ollamaBaseUrl, pickDefaultModel } from "../../src/core/ollama";
+import type { AiRequest } from "../../src/core/ai";
 import { describeSource, parseReply, proposeReorganization, validateProposals } from "../../src/core/organizer";
 import type { FileEntry } from "../../src/core/types";
 
@@ -153,6 +154,8 @@ describe("Ollama", () => {
   let lastRequest: { model: string; stream: boolean; think: boolean; format: unknown; options: { num_ctx: number }; messages: { role: string; content: string }[] };
   let chatReply: string[];
 
+  const ask = (request: AiRequest) => chatJson(baseUrl, { ...request, contextTokens: 8192 });
+
   beforeEach(async () => {
     chatReply = [];
     server = createServer((req, res) => {
@@ -220,7 +223,7 @@ describe("Ollama", () => {
     chatReply.push(JSON.stringify({ message: { content: "" }, done: true }));
     const written: number[] = [];
 
-    const plan = await proposeReorganization(analysis, { baseUrl, model: "gemma2:9b", onText: (chars) => written.push(chars) });
+    const plan = await proposeReorganization(analysis, { ask, model: "gemma2:9b", onText: (chars) => written.push(chars) });
 
     expect(plan).toEqual({
       model: "gemma2:9b",
@@ -240,15 +243,15 @@ describe("Ollama", () => {
 
   it("spiega quando il modello risponde con un testo libero o non risponde affatto", async () => {
     chatReply = [JSON.stringify({ message: { content: "Ecco cosa farei io." }, done: true })];
-    await expect(proposeReorganization(analysis, { baseUrl, model: "gemma2:9b" })).rejects.toThrow(/testo libero/);
+    await expect(proposeReorganization(analysis, { ask, model: "gemma2:9b" })).rejects.toThrow(/testo libero/);
     chatReply = [JSON.stringify({ message: { content: "" }, done: true })];
-    await expect(proposeReorganization(analysis, { baseUrl, model: "gemma2:9b" })).rejects.toThrow(/non ha scritto alcuna risposta/);
+    await expect(proposeReorganization(analysis, { ask, model: "gemma2:9b" })).rejects.toThrow(/non ha scritto alcuna risposta/);
   });
 
   it("recupera le proposte arrivate intere da una risposta interrotta per mancanza di spazio", async () => {
     const cut = '{"summary":"Archivio disordinato.","proposals":[{"action":"merge","from":"Scarica","to":"Documenti","reason":"Stesso tipo"},{"action":"move","from":"fatt_23","to":"Docu';
     chatReply = [JSON.stringify({ message: { content: cut }, done: true, done_reason: "length" })];
-    const plan = await proposeReorganization(analysis, { baseUrl, model: "gemma2:9b" });
+    const plan = await proposeReorganization(analysis, { ask, model: "gemma2:9b" });
     expect(plan.truncated).toBe(true);
     expect(plan.summary).toBe("Archivio disordinato.");
     expect(plan.proposals.map((p) => p.from)).toEqual(["Scarica"]);
@@ -256,6 +259,6 @@ describe("Ollama", () => {
 
   it("riporta l'errore di Ollama, per esempio un modello non installato", async () => {
     chatReply = [JSON.stringify({ error: "model 'x' not found" })];
-    await expect(proposeReorganization(analysis, { baseUrl, model: "x" })).rejects.toThrow(/model 'x' not found/);
+    await expect(proposeReorganization(analysis, { ask, model: "x" })).rejects.toThrow(/model 'x' not found/);
   });
 });

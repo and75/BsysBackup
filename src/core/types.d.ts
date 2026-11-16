@@ -174,21 +174,33 @@ export interface DuplicateProgress {
   total: number;
 }
 
-/** Un modello installato in Ollama su questo computer */
+/** Chi esegue il modello: Ollama su questo computer, oppure un servizio cloud a cui si accede con una chiave API */
+export type AiProvider = "ollama" | "anthropic" | "openai" | "google";
+
+/** Un modello utilizzabile: installato in Ollama, oppure offerto dal servizio cloud scelto */
 export interface AiModel {
   name: string;
-  /** Spazio occupato su disco, in byte: è anche, all'incirca, la memoria che serve per usarlo */
+  /** Nome leggibile, quando il servizio ne fornisce uno diverso dall'identificativo */
+  label?: string;
+  /** Solo Ollama: spazio occupato su disco, in byte; è anche, all'incirca, la memoria che serve per usarlo */
   size: number;
-  /** Numero di parametri come lo riporta Ollama, es. "9.2B" */
+  /** Solo Ollama: numero di parametri, es. "9.2B" */
   parameterSize: string;
 }
 
 export interface AiStatus {
-  /** false se Ollama non risponde su questo computer */
+  provider: AiProvider;
+  /** true se si può chiedere una proposta: Ollama risponde, oppure il servizio ha accettato la chiave */
   available: boolean;
   models: AiModel[];
-  /** Modello scelto dall'utente o, in mancanza, quello consigliato fra gli installati */
+  /** Modello scelto dall'utente o, in mancanza, quello consigliato */
   selected: string | null;
+  /** Solo servizi cloud: c'è una chiave API, salvata nell'app o trovata nell'ambiente */
+  hasKey: boolean;
+  /** La chiave viene da una variabile d'ambiente, non dalle impostazioni dell'app */
+  keyFromEnvironment: boolean;
+  /** Perché il servizio non è utilizzabile, quando non è solo perché manca la chiave */
+  error: string | null;
 }
 
 export type ReorgAction = "move" | "merge" | "rename" | "removeDuplicate";
