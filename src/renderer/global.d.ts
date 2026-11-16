@@ -1,4 +1,4 @@
-import type { AiProvider, AiStatus, ApplyResult, DeviceStatus, DuplicateProgress, DuplicateSummary, Job, PreviewSummary, ProgressInfo, ReorgPlan, ReportSummary } from "../core/types";
+import type { AiProvider, AiStatus, ApplyResult, DeviceStatus, DuplicateProgress, DuplicateSummary, Job, PreviewSummary, ProgressInfo, ReorgOptions, ReorgPlan, ReportSummary } from "../core/types";
 
 export interface JobChanges {
   name?: string;
@@ -40,7 +40,9 @@ export interface BsysApi {
   setAiKey(args: { provider: AiProvider; key: string }): Promise<AiStatus>;
   removeAiKey(args: { provider: AiProvider }): Promise<AiStatus>;
   selectAiModel(args: { model: string }): Promise<void>;
-  proposeReorganization(args: { root: string; model: string }): Promise<ReorgPlan>;
+  getReorgOptions(args: { root: string }): Promise<ReorgOptions>;
+  relativeFolder(args: { root: string; path: string }): Promise<string | null>;
+  proposeReorganization(args: { root: string; model: string; options: ReorgOptions }): Promise<ReorgPlan>;
   cancelProposal(): Promise<void>;
   applyPlan(args: { root: string; indexes: number[] }): Promise<ApplyResult>;
   cancelApply(): Promise<void>;

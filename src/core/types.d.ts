@@ -205,6 +205,20 @@ export interface AiStatus {
 
 export type ReorgAction = "move" | "merge" | "rename" | "removeDuplicate";
 
+/** Come l'utente vuole che venga calibrata la proposta di riorganizzazione */
+export interface ReorgOptions {
+  /** Logica con cui riordinare; "auto" lascia decidere al modello, "cleanup" non cambia la struttura */
+  criterion: "auto" | "type" | "year" | "topic" | "cleanup";
+  /** Quanto cambiare: poche modifiche sicure, una via di mezzo, una riorganizzazione ampia */
+  intensity: "careful" | "balanced" | "deep";
+  /** Azioni che il modello può proporre: le altre vengono scartate */
+  actions: ReorgAction[];
+  /** Cartelle, relative a quella riordinata, che nessuna proposta può spostare, rinominare, unire o riempire */
+  protectedFolders: string[];
+  /** Indicazioni libere dell'utente, passate al modello così come sono */
+  notes: string;
+}
+
 /** Una modifica proposta alla sorgente. È solo un suggerimento: l'app non la esegue. */
 export interface ReorgProposal {
   action: ReorgAction;

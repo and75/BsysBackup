@@ -91,7 +91,7 @@ export function followReorganization(job: Job, outcomes: ApplyOutcome[]): Job {
 }
 
 /** Percorso di `inner` relativo a `outer` ("" se coincidono), o null se `inner` non sta dentro `outer` */
-function relativeWithin(outer: string, inner: string): string | null {
+export function relativeWithin(outer: string, inner: string): string | null {
   const rel = relative(resolve(outer), resolve(inner));
   if (rel.startsWith("..") || isAbsolute(rel)) return null;
   return rel.split(sep).join("/");

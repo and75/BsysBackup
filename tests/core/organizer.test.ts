@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import type { SourceAnalysis } from "../../src/core/duplicates";
 import { chatJson, listModels, ollamaBaseUrl, pickDefaultModel } from "../../src/core/ollama";
 import type { AiRequest } from "../../src/core/ai";
-import { describeSource, parseReply, proposeReorganization, validateProposals } from "../../src/core/organizer";
+import { buildInstructions, DEFAULT_OPTIONS, describeSource, normalizeOptions, parseReply, proposeReorganization, validateProposals } from "../../src/core/organizer";
 import type { FileEntry } from "../../src/core/types";
 
 const year = (y: number) => new Date(`${y}-06-01T10:00:00Z`).getTime();
@@ -118,6 +118,61 @@ describe("validateProposals", () => {
 
   it("non si rompe se il modello non restituisce un elenco", () => {
     expect(validateProposals(undefined, analysis)).toEqual({ proposals: [], discarded: 0 });
+  });
+});
+
+describe("parametri della proposta", () => {
+  const moves = [
+    { action: "move", from: "fatt_23", to: "Documenti/Fatture 2023", reason: "" },
+    { action: "merge", from: "Scarica", to: "Documenti", reason: "" },
+    { action: "rename", from: "Vecchio", to: "Archivio", reason: "" },
+    { action: "removeDuplicate", from: "Vecchio/Foto - Copia", to: "Foto", reason: "" },
+  ];
+  const kept = (options: object) => validateProposals(moves, analysis, { ...DEFAULT_OPTIONS, ...options }).proposals.map((p) => `${p.action} ${p.from}`);
+
+  it("scarta le azioni che l'utente non ha consentito, anche se il modello le propone", () => {
+    expect(kept({ actions: ["rename", "merge"] })).toEqual(["merge Scarica", "rename Vecchio"]);
+    // Una rinomina che cambia posizione è uno spostamento: non passa se gli spostamenti non sono consentiti
+    const sneaky = [{ action: "rename", from: "fatt_23", to: "Documenti/Fatture", reason: "" }];
+    expect(validateProposals(sneaky, analysis, { ...DEFAULT_OPTIONS, actions: ["rename"] }).proposals).toEqual([]);
+  });
+
+  it("non tocca le cartelle protette: né loro, né ciò che contengono, né ciò che le contiene, né come destinazione", () => {
+    expect(kept({ protectedFolders: ["Vecchio/Foto - Copia"] })).toEqual(["move fatt_23", "merge Scarica"]);
+    expect(kept({ protectedFolders: ["Documenti"] })).toEqual(["rename Vecchio", "removeDuplicate Vecchio/Foto - Copia"]);
+    expect(kept({ protectedFolders: ["Foto"] })).toEqual(["move fatt_23", "merge Scarica", "rename Vecchio", "removeDuplicate Vecchio/Foto - Copia"]);
+  });
+
+  it("limita il numero di proposte secondo l'intensità", () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ action: "rename", from: i % 2 ? "Foto" : "Scarica", to: `Nuovo ${i}`, reason: "" }));
+    const entries = Array.from({ length: 12 }, (_, i) => file(`c${i}/a.txt`));
+    const renames = entries.map((e, i) => ({ action: "rename", from: `c${i}`, to: `n${i}`, reason: "" }));
+    const wide = { ...analysis, entries };
+    expect(validateProposals(renames, wide, { ...DEFAULT_OPTIONS, intensity: "careful" }).proposals).toHaveLength(5);
+    expect(validateProposals(renames, wide, { ...DEFAULT_OPTIONS, intensity: "balanced" }).proposals).toHaveLength(10);
+    expect(validateProposals(renames, wide, { ...DEFAULT_OPTIONS, intensity: "deep" }).proposals).toHaveLength(12);
+    expect(many).toHaveLength(12);
+  });
+
+  it("scrive nelle istruzioni criterio, intensità, sole azioni consentite e indicazioni dell'utente", () => {
+    const text = buildInstructions({ ...DEFAULT_OPTIONS, criterion: "year", intensity: "careful", notes: "L'anno va davanti al nome." }, ["rename", "merge"]);
+    expect(text).toContain("raggruppa per anno");
+    expect(text).toContain("al massimo 5");
+    expect(text).toContain('"rename"');
+    expect(text).not.toContain('"removeDuplicate"');
+    expect(text).toContain("L'anno va davanti al nome.");
+    expect(describeSource(analysis, { ...DEFAULT_OPTIONS, protectedFolders: ["Documenti"] })).toContain("Cartelle da non toccare:\n- Documenti");
+  });
+
+  it("rimette ai valori predefiniti i parametri non validi", () => {
+    expect(normalizeOptions(undefined)).toEqual(DEFAULT_OPTIONS);
+    expect(normalizeOptions({ criterion: "a caso", intensity: 7, actions: ["rename", "format C:"], protectedFolders: ["/Foto/", "", 3, "Foto"], notes: `  ${"x".repeat(600)}  ` })).toEqual({
+      criterion: "auto",
+      intensity: "balanced",
+      actions: ["rename"],
+      protectedFolders: ["Foto"],
+      notes: "x".repeat(500),
+    });
   });
 });
 
@@ -255,6 +310,17 @@ describe("Ollama", () => {
     expect(plan.truncated).toBe(true);
     expect(plan.summary).toBe("Archivio disordinato.");
     expect(plan.proposals.map((p) => p.from)).toEqual(["Scarica"]);
+  });
+
+  it("manda al modello uno schema con le sole azioni consentite, e senza eliminazioni se i duplicati non sono stati cercati", async () => {
+    chatReply = [JSON.stringify({ message: { content: '{"summary":"","proposals":[]}' }, done: true })];
+    const actionsSent = () => (lastRequest.format as { properties: { proposals: { items: { properties: { action: { enum: string[] } } } } } }).properties.proposals.items.properties.action.enum;
+    await proposeReorganization(analysis, { ask, model: "gemma2:9b", options: { ...DEFAULT_OPTIONS, actions: ["rename", "removeDuplicate"] } });
+    expect(actionsSent()).toEqual(["rename", "removeDuplicate"]);
+    await proposeReorganization({ ...analysis, duplicatesKnown: false }, { ask, model: "gemma2:9b" });
+    expect(actionsSent()).toEqual(["move", "merge", "rename"]);
+    await expect(proposeReorganization(analysis, { ask, model: "gemma2:9b", options: { ...DEFAULT_OPTIONS, actions: [] } })).rejects.toThrow(/almeno un'azione/);
+    await expect(proposeReorganization({ ...analysis, duplicatesKnown: false }, { ask, model: "gemma2:9b", options: { ...DEFAULT_OPTIONS, actions: ["removeDuplicate"] } })).rejects.toThrow(/non sono stati cercati/);
   });
 
   it("riporta l'errore di Ollama, per esempio un modello non installato", async () => {

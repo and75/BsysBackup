@@ -1,5 +1,5 @@
 /// <reference path="./global.d.ts" />
-import type { AiProvider, AiStatus, ApplyOutcome, ApplyResult, DuplicateGroup, DuplicateProgress, DuplicateSummary, ReorgAction, ReorgPlan, ReorgProposal } from "../core/types";
+import type { AiProvider, AiStatus, ApplyOutcome, ApplyResult, DuplicateGroup, DuplicateProgress, DuplicateSummary, ReorgAction, ReorgOptions, ReorgPlan, ReorgProposal } from "../core/types";
 import { analyze, errorMessage, guard, hooks, navigate, render, replaceJob, state } from "./app.js";
 import { fileCount, formatBytes, formatNumber, h } from "./dom.js";
 
@@ -25,6 +25,8 @@ export const files = {
   plan: null as PlanState | null,
   /** `chars`: caratteri scritti finora dal modello, 0 finché sta ancora leggendo l'elenco */
   proposal: null as { chars: number; cancelling: boolean } | null,
+  /** Come calibrare la proposta; null finché non sono stati letti gli ultimi parametri usati */
+  options: null as ReorgOptions | null,
   /** Proposte spuntate dall'utente, per indice nell'elenco: all'inizio nessuna */
   proposals: new Set<number>(),
   /** Quale conferma è aperta, prima di modificare la cartella */
@@ -57,6 +59,7 @@ hooks.navigated.push((view) => {
       files.loaded = true;
       render();
     }
+    if (view.name === "reorganize") await loadOptions();
     if (!files.ai && view.name !== "duplicates") await checkAi();
   })();
 });
@@ -73,9 +76,40 @@ async function openFolder(folder: string): Promise<void> {
   if (busy() || folder === files.folder) return;
   files.folder = folder;
   files.result = null;
+  files.options = null;
   forgetFolder();
   render();
   await window.api.setFilesFolder({ root: folder });
+  if (state.view.name === "reorganize") await loadOptions();
+}
+
+/** Legge gli ultimi parametri usati; le cartelle da non toccare valgono solo per la cartella in cui sono state scelte */
+async function loadOptions(): Promise<void> {
+  const root = files.folder;
+  if (!root || files.options) return;
+  const options = await window.api.getReorgOptions({ root });
+  if (files.folder !== root || files.options) return;
+  files.options = options;
+  render();
+}
+
+function setOptions(change: Partial<ReorgOptions>): void {
+  if (!files.options) return;
+  files.options = { ...files.options, ...change };
+  render();
+}
+
+async function protectFolder(): Promise<void> {
+  const root = files.folder;
+  const picked = await window.api.selectFolder();
+  if (!root || !picked || !files.options) return;
+  const relPath = await window.api.relativeFolder({ root, path: picked });
+  if (!relPath) {
+    state.error = "Scegli una cartella che sta dentro quella da riordinare.";
+    render();
+    return;
+  }
+  if (!files.options.protectedFolders.includes(relPath)) setOptions({ protectedFolders: [...files.options.protectedFolders, relPath] });
 }
 
 async function chooseFolder(): Promise<void> {
@@ -164,7 +198,8 @@ async function selectAiModel(model: string): Promise<void> {
 async function propose(): Promise<void> {
   const root = files.folder;
   const model = files.ai?.selected;
-  if (!root || !model || busy()) return;
+  const options = files.options;
+  if (!root || !model || !options || busy()) return;
   const run = { chars: 0, cancelling: false };
   files.proposal = run;
   files.plan = null;
@@ -174,7 +209,7 @@ async function propose(): Promise<void> {
   render();
   let result: PlanState | null;
   try {
-    result = { status: "ready", plan: await window.api.proposeReorganization({ root, model }) };
+    result = { status: "ready", plan: await window.api.proposeReorganization({ root, model, options }) };
   } catch (err) {
     result = run.cancelling ? null : { status: "error", message: errorMessage(err) };
   }
@@ -571,8 +606,98 @@ function recheckButton(): HTMLElement {
 function privacyNote(): HTMLElement {
   const company = files.ai ? PROVIDERS[files.ai.provider].company : null;
   return company
-    ? h("p", { class: "warn small" }, `I nomi delle cartelle e i conteggi dei file vengono inviati al servizio di ${company} per ottenere la proposta. Il contenuto dei file non viene mai inviato.`)
+    ? h("p", { class: "warn small" }, `I nomi delle cartelle, i conteggi dei file e le tue indicazioni vengono inviati al servizio di ${company} per ottenere la proposta. Il contenuto dei file non viene mai inviato.`)
     : h("p", { class: "muted small" }, "Il modello gira su questo computer: i nomi delle tue cartelle non escono dal computer.");
+}
+
+const CRITERIA: [ReorgOptions["criterion"], string][] = [
+  ["auto", "Lascia decidere al modello"],
+  ["type", "Per tipo di contenuto"],
+  ["year", "Per anno"],
+  ["topic", "Per argomento o progetto"],
+  ["cleanup", "Solo pulizia, senza cambiare la struttura"],
+];
+const INTENSITIES: [ReorgOptions["intensity"], string][] = [
+  ["careful", "Prudente: poche modifiche sicure"],
+  ["balanced", "Equilibrata"],
+  ["deep", "Profonda: riorganizzazione ampia"],
+];
+const ACTION_CHOICES: [ReorgAction, string][] = [
+  ["move", "Spostare"],
+  ["merge", "Unire"],
+  ["rename", "Rinominare"],
+  ["removeDuplicate", "Eliminare le copie"],
+];
+
+function choice<T extends string>(label: string, items: [T, string][], value: T, onChange: (value: T) => void): HTMLElement {
+  const select = h("select", { class: "select", disabled: busy() }, ...items.map(([key, text]) => h("option", { value: key }, text)));
+  select.value = value;
+  select.addEventListener("change", () => onChange(select.value as T));
+  return h("label", { class: "plan-model" }, h("span", { class: "muted small" }, label), select);
+}
+
+/** I parametri con cui calibrare la proposta: valgono dalla prossima volta che si preme Proponi */
+function optionsForm(): Part {
+  const options = files.options;
+  if (!options) return false;
+  const searched = files.duplicates?.status === "ready";
+
+  const notes = h("textarea", { class: "select notes", rows: 2, maxlength: 500, disabled: busy(), placeholder: "Per esempio: tieni separati lavoro e privato; l'anno va davanti al nome" }) as HTMLTextAreaElement;
+  notes.value = options.notes;
+  // Senza ricostruire la schermata a ogni tasto, che farebbe perdere il punto in cui si sta scrivendo
+  notes.addEventListener("input", () => {
+    if (files.options) files.options = { ...files.options, notes: notes.value };
+  });
+
+  return h(
+    "div",
+    { class: "options", role: "group", "aria-label": "Parametri della proposta" },
+    h(
+      "div",
+      { class: "plan-controls" },
+      choice("Criterio", CRITERIA, options.criterion, (criterion) => setOptions({ criterion })),
+      choice("Intensità", INTENSITIES, options.intensity, (intensity) => setOptions({ intensity }))
+    ),
+    h(
+      "div",
+      { class: "stack-small" },
+      h("span", { class: "muted small" }, "Cosa può proporre"),
+      h(
+        "div",
+        { class: "shortcuts" },
+        ...ACTION_CHOICES.map(([action, text]) => {
+          const box = h("input", { type: "checkbox", disabled: busy() }) as HTMLInputElement;
+          box.checked = options.actions.includes(action);
+          box.addEventListener("change", () => setOptions({ actions: ACTION_CHOICES.map(([a]) => a).filter((a) => (a === action ? box.checked : options.actions.includes(a))) }));
+          return h("label", { class: "dup-copy" }, box, h("span", null, text));
+        })
+      ),
+      options.actions.includes("removeDuplicate") && !searched && h("p", { class: "muted small" }, "Le copie da eliminare vengono proposte solo dopo aver cercato i duplicati di questa cartella.")
+    ),
+    h(
+      "div",
+      { class: "stack-small" },
+      h("span", { class: "muted small" }, "Cartelle da non toccare"),
+      h(
+        "div",
+        { class: "shortcuts" },
+        ...options.protectedFolders.map((folder) =>
+          h(
+            "span",
+            { class: "chip-removable" },
+            folder,
+            h(
+              "button",
+              { type: "button", class: "chip-remove", "aria-label": `Togli ${folder}`, disabled: busy(), onclick: () => setOptions({ protectedFolders: options.protectedFolders.filter((f) => f !== folder) }) },
+              "×"
+            )
+          )
+        ),
+        h("button", { type: "button", class: "btn btn-small", disabled: busy(), onclick: guard(protectFolder) }, "Aggiungi una cartella…")
+      )
+    ),
+    h("label", { class: "stack-small" }, h("span", { class: "muted small" }, "Indicazioni tue (facoltative)"), notes)
+  );
 }
 
 function proposalItem(proposal: ReorgProposal, index: number): HTMLElement {
@@ -631,8 +756,12 @@ function reorganizePanel(): HTMLElement {
     );
   }
   const result = files.plan;
-  const start = h("button", { type: "button", class: result ? "btn btn-small" : "btn btn-small btn-primary", disabled: busy(), onclick: guard(propose) }, result ? "Proponi di nuovo" : "Proponi");
-  const controls = h("div", { class: "plan-controls" }, ...picker.content, start);
+  const start = h(
+    "button",
+    { type: "button", class: result ? "btn btn-small" : "btn btn-small btn-primary", disabled: busy() || !files.options || files.options.actions.length === 0, onclick: guard(propose) },
+    result ? "Proponi di nuovo" : "Proponi"
+  );
+  const controls = h("div", { class: "stack" }, optionsForm(), h("div", { class: "plan-controls" }, ...picker.content, start));
 
   if (result?.status === "error") return panel(title, false, privacyNote(), controls, h("p", { class: "warn" }, result.message));
   if (result?.status !== "ready") {
@@ -653,7 +782,7 @@ function reorganizePanel(): HTMLElement {
   }
 
   const { plan } = result;
-  const discarded = plan.discarded === 1 ? "1 proposta scartata perché indicava" : `${formatNumber(plan.discarded)} proposte scartate perché indicavano`;
+  const discarded = plan.discarded === 1 ? "1 proposta scartata" : `${formatNumber(plan.discarded)} proposte scartate`;
   return panel(
     title,
     false,
@@ -663,7 +792,7 @@ function reorganizePanel(): HTMLElement {
     plan.proposals.length === 0 && h("p", { class: "muted" }, "Il modello non ha proposto modifiche."),
     plan.proposals.length > 0 && h("ul", { class: "dup-list" }, ...plan.proposals.map(proposalItem)),
     plan.truncated && h("p", { class: "warn small" }, "Il modello si è interrotto prima di finire: l'elenco può essere incompleto."),
-    plan.discarded > 0 && h("p", { class: "muted small" }, `${discarded} cartelle inesistenti o spostamenti impossibili.`),
+    plan.discarded > 0 && h("p", { class: "muted small" }, `${discarded}: cartelle inesistenti, spostamenti impossibili o modifiche escluse dai tuoi parametri.`),
     h("p", { class: "muted small" }, `Sono suggerimenti di ${plan.model}, da valutare: nulla viene toccato finché non scegli tu cosa applicare.`),
     plan.proposals.length > 0 && planControls()
   );

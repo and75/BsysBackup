@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld("api", {
   setAiProvider: (args: unknown) => ipcRenderer.invoke("ai:setProvider", args),
   setAiKey: (args: unknown) => ipcRenderer.invoke("ai:setKey", args),
   removeAiKey: (args: unknown) => ipcRenderer.invoke("ai:removeKey", args),
+  getReorgOptions: (args: unknown) => ipcRenderer.invoke("ai:getOptions", args),
+  relativeFolder: (args: unknown) => ipcRenderer.invoke("files:relative", args),
   aiStatus: () => ipcRenderer.invoke("ai:status"),
   selectAiModel: (args: unknown) => ipcRenderer.invoke("ai:selectModel", args),
   proposeReorganization: (args: unknown) => ipcRenderer.invoke("ai:propose", args),

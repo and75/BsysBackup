@@ -2,18 +2,18 @@ import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, type WebConten
 import { basename, dirname, join } from "node:path";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
-import { createJob, deleteJob, followReorganizationAt, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
+import { createJob, deleteJob, followReorganizationAt, relativeWithin, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
 import { applyProposals, formatApplyLog } from "../core/applier";
 import { analyzeSource, listSource, summarizeDuplicates, type SourceAnalysis } from "../core/duplicates";
 import { askProvider, isCloud, listProviderModels, PROVIDER_ENV, type AiAccess } from "../core/ai";
 import { ANTHROPIC_DEFAULT_MODEL } from "../core/anthropic";
 import { pickDefaultModel } from "../core/ollama";
-import { proposeReorganization, UnreadableReplyError } from "../core/organizer";
+import { normalizeOptions, proposeReorganization, UnreadableReplyError } from "../core/organizer";
 import { loadSettings, saveSettings, type Settings } from "../core/settings";
 import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
 import { toAbs } from "../core/router";
-import type { AiModel, AiProvider, AiStatus, ApplyResult, DuplicateProgress, Job, ProgressInfo, ReorgPlan, ReorgProposal } from "../core/types";
+import type { AiModel, AiProvider, AiStatus, ApplyResult, DuplicateProgress, Job, ProgressInfo, ReorgOptions, ReorgPlan, ReorgProposal } from "../core/types";
 
 let currentRun: AbortController | null = null;
 let currentSearch: AbortController | null = null;
@@ -351,7 +351,17 @@ function registerIpcHandlers(): void {
     await saveSettings(settingsPath(), { ...settings, aiModels: { ...settings.aiModels, [provider]: args.model } });
   });
 
-  ipcMain.handle("ai:propose", async (event, args: { root: string; model: string }) => {
+  // I parametri dell'ultima proposta; le cartelle da non toccare valgono solo per la cartella in cui sono state scelte
+  ipcMain.handle("ai:getOptions", async (_e, args: { root: string }): Promise<ReorgOptions> => {
+    const saved = (await loadSettings(settingsPath())).reorgOptions;
+    const options = normalizeOptions(saved?.options);
+    return saved?.root === args.root ? options : { ...options, protectedFolders: [] };
+  });
+
+  // Percorso di una cartella scelta dall'utente rispetto a quella riordinata; null se non ne fa parte
+  ipcMain.handle("files:relative", (_e, args: { root: string; path: string }) => relativeWithin(args.root, args.path) || null);
+
+  ipcMain.handle("ai:propose", async (event, args: { root: string; model: string; options?: unknown }) => {
     if (currentProposal) throw new Error("Una proposta di riorganizzazione è già in preparazione.");
     const proposal = new AbortController();
     currentProposal = proposal;
@@ -370,11 +380,14 @@ function registerIpcHandlers(): void {
       // Se i duplicati sono già stati cercati la proposta ne tiene conto; altrimenti basta l'elenco dei file
       const analysis = space.analysis ?? (await listSource(args.root));
       proposal.signal.throwIfAborted();
+      const options = normalizeOptions(args.options);
       const settings = await loadSettings(settingsPath());
+      await saveSettings(settingsPath(), { ...settings, reorgOptions: { root: args.root, options } });
       const provider = settings.aiProvider ?? "ollama";
       const { access } = accessFor(provider, settings);
       const plan = await proposeReorganization(analysis, {
         model: args.model,
+        options,
         ask: (request) => askProvider(provider, access, request),
         signal: proposal.signal,
         onText: sendText,

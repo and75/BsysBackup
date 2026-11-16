@@ -35,7 +35,7 @@ h1, h2, p, ul, ol { margin: 0; }
 ul, ol { padding: 0; list-style: none; }
 h1 { font-size: 22px; font-weight: 600; }
 h2 { font-size: 15px; font-weight: 600; }
-button, input { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 
 .icon { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 
@@ -93,6 +93,12 @@ button, input { font: inherit; color: inherit; }
 .provider:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .provider input { width: 16px; height: 16px; margin: 0; flex-shrink: 0; }
 input.select::placeholder { color: var(--muted); }
+.options { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; background: var(--bg); border-radius: 8px; }
+.stack-small { display: flex; flex-direction: column; gap: 6px; }
+textarea.notes { min-height: 56px; padding: 8px 10px; resize: vertical; line-height: 1.4; }
+.chip-removable { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 10px; border-radius: 999px; background: var(--surface-2); font-size: 13px; overflow-wrap: anywhere; }
+.chip-remove { width: 24px; height: 24px; border: none; border-radius: 50%; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; }
+.chip-remove:hover:not(:disabled) { background: var(--border); color: var(--text); }
 .shortcuts { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
 .dup-copy { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
 .dup-copy input { width: 16px; height: 16px; margin: 2px 0 0; flex-shrink: 0; }
