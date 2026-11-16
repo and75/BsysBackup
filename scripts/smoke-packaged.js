@@ -57,14 +57,18 @@ async function main() {
       `(async () => {
         const jobs = await window.api.listJobs();
         const home = document.querySelector("h1")?.textContent;
+        const shown = document.querySelector(".version")?.textContent;
         [...document.querySelectorAll("button")].find((b) => b.textContent === "Nuovo backup").click();
         await new Promise((r) => setTimeout(r, 300));
-        return { title: document.title, ipc: Array.isArray(jobs), home, form: document.querySelector("h1")?.textContent };
+        return { title: document.title, version: window.api.version, shown, ipc: Array.isArray(jobs), home, form: document.querySelector("h1")?.textContent };
       })()`
     );
     console.log("Risultato:", JSON.stringify(result));
     if (result.title !== "BsysBackup" || !result.ipc || result.home !== "I tuoi backup" || result.form !== "Nuovo backup") {
       throw new Error("L'app impacchettata non funziona come atteso");
+    }
+    if (!/^\d+\.\d+\.\d+$/.test(result.version) || result.shown !== `versione ${result.version}`) {
+      throw new Error("L'app impacchettata non mostra la propria versione");
     }
     console.log("OK: finestra aperta, IPC e interfaccia funzionanti");
   } finally {

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("api", {
   platform: process.platform,
+  version: process.argv.find((arg) => arg.startsWith("--app-version="))?.slice("--app-version=".length) ?? "",
   selectFolder: () => ipcRenderer.invoke("dialog:selectFolder"),
   listJobs: () => ipcRenderer.invoke("job:list"),
   createJob: (args: unknown) => ipcRenderer.invoke("job:create", args),

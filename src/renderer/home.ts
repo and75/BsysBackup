@@ -198,7 +198,7 @@ export function renderHome(): HTMLElement[] {
   const header = h(
     "header",
     { class: "topbar" },
-    h("div", { class: "brand" }, "BsysBackup"),
+    h("div", { class: "brand" }, "BsysBackup", window.api.version && h("span", { class: "version" }, `versione ${window.api.version}`)),
     h("button", { type: "button", class: "btn", onclick: newJob }, "Nuovo backup")
   );
 

@@ -63,6 +63,7 @@ button, input { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--border);
 }
 .brand, .topbar-name { font-size: 18px; font-weight: 600; }
+.version { margin-left: 10px; font-size: 12px; font-weight: 400; color: var(--muted); }
 .topbar-title { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .page { max-width: 1240px; margin: 0 auto; padding: 24px 32px 32px; display: flex; flex-direction: column; gap: 22px; }
 .page.narrow { max-width: 720px; }

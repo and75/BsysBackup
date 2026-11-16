@@ -35,12 +35,17 @@ function createWindow(): void {
     minHeight: 560,
     backgroundColor: "#14161a",
     autoHideMenuBar: true,
+    title: `BsysBackup ${app.getVersion()}`,
     webPreferences: {
       preload: join(__dirname, "preload.js"),
+      // Il preload non può chiedere la versione all'app: gliela si passa così
+      additionalArguments: [`--app-version=${app.getVersion()}`],
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  // Il titolo della pagina sostituirebbe quello della finestra, che riporta la versione
+  win.on("page-title-updated", (event) => event.preventDefault());
   win.loadFile(join(__dirname, "..", "renderer", "index.html"));
 }
 

@@ -14,6 +14,8 @@ export interface TreeChild {
 
 export interface BsysApi {
   platform: string;
+  /** Versione dell'app installata, es. "0.5.0" */
+  version: string;
   selectFolder(): Promise<string | null>;
   listJobs(): Promise<Job[]>;
   createJob(args: { name: string; sourceRoot: string; defaultDestination: string }): Promise<Job>;
