@@ -1,8 +1,25 @@
 /// <reference path="./global.d.ts" />
-import type { AiStatus, ApplyResult, DeviceStatus, DuplicateProgress, DuplicateSummary, ExcludedPath, Job, Override, PreviewSummary, ProgressInfo, ReorgPlan, ReportSummary } from "../core/types";
+import type { DeviceStatus, ExcludedPath, Job, Override, PreviewSummary, ProgressInfo, ReportSummary } from "../core/types";
 import type { TreeChild } from "./global.js";
 
-export type View = { name: "home" } | { name: "new" } | { name: "job"; jobId: string } | { name: "result"; report: ReportSummary };
+export type View =
+  | { name: "home" }
+  | { name: "new" }
+  | { name: "job"; jobId: string }
+  | { name: "result"; report: ReportSummary }
+  | { name: "duplicates" }
+  | { name: "reorganize" }
+  | { name: "settings" };
+
+/** Punti in cui le altre sezioni dell'app si agganciano a ciò che succede qui, senza che questo modulo le conosca */
+export const hooks = {
+  /** Prima di ricostruire la schermata: chi aggiorna pezzi di interfaccia a mano dimentica quelli vecchi */
+  beforeRender: [] as (() => void)[],
+  /** A ogni cambio di schermata */
+  navigated: [] as ((view: View) => void)[],
+  /** Quando parte un backup, che ha la precedenza sulle altre operazioni sul disco */
+  backupStarting: [] as (() => void)[],
+};
 
 export type PreviewState =
   | { status: "loading" }
@@ -10,23 +27,6 @@ export type PreviewState =
   | { status: "error"; message: string }
   /** Analisi non avviata: la sorgente o un disco di destinazione non è collegato */
   | { status: "disconnected"; devices: DeviceStatus };
-
-export type DuplicatesState = { status: "ready"; summary: DuplicateSummary } | { status: "error"; message: string };
-
-export interface DuplicateSearch {
-  jobId: string;
-  progress: DuplicateProgress | null;
-  cancelling: boolean;
-}
-
-export type PlanState = { status: "ready"; plan: ReorgPlan } | { status: "error"; message: string };
-
-export interface ProposalRun {
-  jobId: string;
-  /** Caratteri scritti finora dal modello: 0 finché sta ancora leggendo l'elenco */
-  chars: number;
-  cancelling: boolean;
-}
 
 export interface Running {
   jobId: string;
@@ -40,21 +40,6 @@ export const state = {
   history: [] as ReportSummary[],
   previews: new Map<string, PreviewState>(),
   running: null as Running | null,
-  /** Esito dell'ultima ricerca di duplicati per ogni backup, finché l'app resta aperta */
-  duplicates: new Map<string, DuplicatesState>(),
-  /** La ricerca di duplicati in corso: una sola alla volta */
-  duplicateSearch: null as DuplicateSearch | null,
-  /** Ollama e i suoi modelli; null finché non è stato interrogato */
-  ai: null as AiStatus | null,
-  aiChecking: false,
-  plans: new Map<string, PlanState>(),
-  proposal: null as ProposalRun | null,
-  /** Proposte spuntate dall'utente, per indice nell'elenco: all'inizio nessuna */
-  planSelection: new Map<string, Set<number>>(),
-  /** true mentre si chiede conferma prima di modificare la sorgente */
-  confirmApply: false,
-  applying: null as { jobId: string; done: number; total: number; cancelling: boolean } | null,
-  applyResults: new Map<string, ApplyResult>(),
   error: null as string | null,
   /** false finché l'elenco dei backup non è stato letto: evita di mostrare per un attimo "nessun backup" */
   loaded: false,
@@ -66,8 +51,6 @@ export const state = {
 
 let renderView: () => void = () => {};
 const progressListeners = new Set<(progress: ProgressInfo | null) => void>();
-const duplicateListeners = new Set<(progress: DuplicateProgress | null) => void>();
-const proposalListeners = new Set<(chars: number) => void>();
 
 export function setRenderer(fn: () => void): void {
   renderView = fn;
@@ -75,8 +58,7 @@ export function setRenderer(fn: () => void): void {
 
 export function render(): void {
   progressListeners.clear();
-  duplicateListeners.clear();
-  proposalListeners.clear();
+  for (const hook of hooks.beforeRender) hook();
   renderView();
 }
 
@@ -86,19 +68,7 @@ export function onProgress(fn: (progress: ProgressInfo | null) => void): void {
   fn(state.running?.progress ?? null);
 }
 
-/** Come onProgress, per l'avanzamento della ricerca dei duplicati */
-export function onDuplicateProgress(fn: (progress: DuplicateProgress | null) => void): void {
-  duplicateListeners.add(fn);
-  fn(state.duplicateSearch?.progress ?? null);
-}
-
-/** Aggiorna l'indicazione di quanto ha scritto il modello, senza ricostruire la schermata */
-export function onProposalProgress(fn: (chars: number) => void): void {
-  proposalListeners.add(fn);
-  fn(state.proposal?.chars ?? 0);
-}
-
-function errorMessage(err: unknown): string {
+export function errorMessage(err: unknown): string {
   const text = err instanceof Error ? err.message : String(err);
   return text.replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
 }
@@ -158,7 +128,7 @@ export function excludingEntry(job: Job, relPath: string): ExcludedPath | undefi
   return job.excludedPaths.find((ex) => isWithinPath(relPath, ex.relativePath));
 }
 
-function replaceJob(job: Job): void {
+export function replaceJob(job: Job): void {
   state.jobs = state.jobs.map((j) => (j.id === job.id ? job : j));
 }
 
@@ -237,7 +207,6 @@ export function navigate(view: View): void {
   state.view = view;
   state.error = null;
   state.confirmDelete = false;
-  state.confirmApply = false;
   state.showChangedList = false;
   if (view.name === "new") state.newJob = { name: "", sourceRoot: "", defaultDestination: "" };
   if (view.name === "job") {
@@ -248,9 +217,9 @@ export function navigate(view: View): void {
       render();
       const current = state.previews.get(jobId);
       if (!current || current.status === "disconnected") await analyze(jobId);
-      if (!state.ai) await checkAi();
     })();
   }
+  for (const hook of hooks.navigated) hook(view);
   render();
 }
 
@@ -295,9 +264,6 @@ export async function changeFolder(jobId: string, field: "sourceRoot" | "default
   if (!folder) return;
   replaceJob(await window.api.updateJob({ jobId, changes: { [field]: folder } }));
   if (field === "sourceRoot") {
-    state.duplicates.delete(jobId);
-    forgetPlan(jobId);
-    state.applyResults.delete(jobId);
     state.tree = { expanded: new Set([""]), children: new Map(), selected: null };
     await loadChildren(jobId, "");
   }
@@ -332,17 +298,13 @@ export async function deleteJob(jobId: string): Promise<void> {
   await window.api.deleteJob({ jobId });
   state.jobs = state.jobs.filter((j) => j.id !== jobId);
   state.previews.delete(jobId);
-  state.duplicates.delete(jobId);
-  forgetPlan(jobId);
-  state.applyResults.delete(jobId);
   navigate({ name: "home" });
 }
 
 export async function runJob(jobId: string): Promise<void> {
   if (state.running) return;
   state.running = { jobId, progress: null, cancelling: false };
-  // Avviando un backup la ricerca dei duplicati viene interrotta: non è un errore da mostrare
-  if (state.duplicateSearch) state.duplicateSearch.cancelling = true;
+  for (const hook of hooks.backupStarting) hook();
   state.error = null;
   render();
   try {
@@ -366,137 +328,6 @@ export async function cancelRun(): Promise<void> {
   await window.api.cancelJob();
 }
 
-export async function findDuplicates(jobId: string): Promise<void> {
-  if (state.duplicateSearch || state.running) return;
-  const search: DuplicateSearch = { jobId, progress: null, cancelling: false };
-  const sourceRoot = jobById(jobId)?.sourceRoot;
-  state.duplicateSearch = search;
-  state.duplicates.delete(jobId);
-  state.applyResults.delete(jobId);
-  render();
-  let result: DuplicatesState | null;
-  try {
-    result = { status: "ready", summary: await window.api.findDuplicates({ jobId }) };
-  } catch (err) {
-    result = search.cancelling ? null : { status: "error", message: errorMessage(err) };
-  }
-  state.duplicateSearch = null;
-  // Se nel frattempo la sorgente è stata cambiata, l'esito riguarda un'altra cartella
-  if (result && jobById(jobId)?.sourceRoot === sourceRoot) state.duplicates.set(jobId, result);
-  render();
-}
-
-export async function cancelDuplicates(): Promise<void> {
-  if (!state.duplicateSearch) return;
-  state.duplicateSearch.cancelling = true;
-  render();
-  await window.api.cancelDuplicates();
-}
-
-function forgetPlan(jobId: string): void {
-  state.plans.delete(jobId);
-  state.planSelection.delete(jobId);
-  state.confirmApply = false;
-}
-
-export function toggleProposal(jobId: string, index: number): void {
-  const selection = state.planSelection.get(jobId) ?? new Set<number>();
-  if (selection.has(index)) selection.delete(index);
-  else selection.add(index);
-  state.planSelection.set(jobId, selection);
-  state.confirmApply = false;
-  render();
-}
-
-export function askApply(confirm: boolean): void {
-  state.confirmApply = confirm;
-  render();
-}
-
-/** Applica alla sorgente le proposte spuntate, poi rilegge tutto: l'elenco dei duplicati e la proposta non valgono più */
-export async function applyPlan(jobId: string): Promise<void> {
-  const indexes = [...(state.planSelection.get(jobId) ?? [])];
-  if (state.applying || state.running || indexes.length === 0) return;
-  state.applying = { jobId, done: 0, total: indexes.length, cancelling: false };
-  state.confirmApply = false;
-  render();
-  try {
-    const result = await window.api.applyPlan({ jobId, indexes });
-    replaceJob(result.job);
-    state.applyResults.set(jobId, result);
-    state.duplicates.delete(jobId);
-    forgetPlan(jobId);
-    if (state.view.name === "job" && state.view.jobId === jobId) {
-      state.tree = { expanded: new Set([""]), children: new Map(), selected: null };
-      await loadChildren(jobId, "");
-    }
-  } finally {
-    state.applying = null;
-    render();
-  }
-  await analyze(jobId);
-}
-
-export async function cancelApply(): Promise<void> {
-  if (!state.applying) return;
-  state.applying.cancelling = true;
-  render();
-  await window.api.cancelApply();
-}
-
-export function dismissApplyResult(jobId: string): void {
-  state.applyResults.delete(jobId);
-  render();
-}
-
-export async function openApplyLog(path: string): Promise<void> {
-  await window.api.openApplyLog({ path });
-}
-
-export async function checkAi(): Promise<void> {
-  if (state.aiChecking) return;
-  state.aiChecking = true;
-  render();
-  try {
-    state.ai = await window.api.aiStatus();
-  } finally {
-    state.aiChecking = false;
-    render();
-  }
-}
-
-export async function selectAiModel(model: string): Promise<void> {
-  if (!state.ai) return;
-  state.ai = { ...state.ai, selected: model };
-  await window.api.selectAiModel({ model });
-}
-
-export async function proposeReorganization(jobId: string): Promise<void> {
-  const model = state.ai?.selected;
-  if (state.proposal || !model) return;
-  const run: ProposalRun = { jobId, chars: 0, cancelling: false };
-  const sourceRoot = jobById(jobId)?.sourceRoot;
-  state.proposal = run;
-  forgetPlan(jobId);
-  render();
-  let result: PlanState | null;
-  try {
-    result = { status: "ready", plan: await window.api.proposeReorganization({ jobId, model }) };
-  } catch (err) {
-    result = run.cancelling ? null : { status: "error", message: errorMessage(err) };
-  }
-  state.proposal = null;
-  if (result && jobById(jobId)?.sourceRoot === sourceRoot) state.plans.set(jobId, result);
-  render();
-}
-
-export async function cancelProposal(): Promise<void> {
-  if (!state.proposal) return;
-  state.proposal.cancelling = true;
-  render();
-  await window.api.cancelProposal();
-}
-
 export async function openReport(reportId: string): Promise<void> {
   await window.api.openReport({ reportId });
 }
@@ -505,24 +336,6 @@ window.api.onProgress((info) => {
   if (!state.running) return;
   state.running.progress = info;
   for (const listener of progressListeners) listener(info);
-});
-
-window.api.onApplyProgress((info) => {
-  if (!state.applying) return;
-  state.applying = { ...state.applying, ...info };
-  render();
-});
-
-window.api.onProposalProgress((chars) => {
-  if (!state.proposal) return;
-  state.proposal.chars = chars;
-  for (const listener of proposalListeners) listener(chars);
-});
-
-window.api.onDuplicateProgress((info) => {
-  if (!state.duplicateSearch) return;
-  state.duplicateSearch.progress = info;
-  for (const listener of duplicateListeners) listener(info);
 });
 
 // Tornando all'app dopo aver collegato un disco, i backup in attesa vengono ricontrollati da soli

@@ -1,41 +1,27 @@
-import type { ApplyOutcome, DuplicateGroup, Job, PreviewSummary, ReorgAction, ReorgProposal } from "../core/types";
+import type { Job, PreviewSummary } from "../core/types";
 import {
   analyze,
-  applyPlan,
-  askApply,
   assignOverride,
-  cancelApply,
-  cancelDuplicates,
-  cancelProposal,
   cancelRun,
-  checkAi,
   changeFolder,
   clearOverride,
   deleteJob,
   destinationRoots,
-  dismissApplyResult,
   excludePath,
   excludingEntry,
-  findDuplicates,
   guard,
   includePath,
   navigate,
-  onDuplicateProgress,
   onProgress,
-  onProposalProgress,
-  openApplyLog,
   overrideAt,
-  proposeReorganization,
   refreshPreview,
   render,
   resolveDestination,
   runJob,
-  selectAiModel,
   selectFolder,
   setVerifyWithHash,
   state,
   toggleFolder,
-  toggleProposal,
 } from "./app.js";
 import { fileCount, formatBytes, formatNumber, h, icon } from "./dom.js";
 
@@ -160,296 +146,6 @@ function foldersPanel(job: Job): HTMLElement {
       )
     ),
     h("ul", { class: "tree-list tree" }, treeRow(job, "", job.sourceRoot, true, 0, unreachableRoots(job)))
-  );
-}
-
-function duplicateGroup(group: DuplicateGroup): HTMLElement {
-  const isFolder = group.kind === "folder";
-  const each = group.copies > 2 ? " ciascuna" : " l'una";
-  const hidden = group.copies - group.paths.length;
-  return h(
-    "li",
-    { class: "dup-group" },
-    h(
-      "div",
-      { class: "dup-head" },
-      h("span", { class: `pill ${isFolder ? "pill-info" : "pill-muted"}` }, isFolder ? "Cartella" : "File"),
-      h("span", null, `${formatNumber(group.copies)} copie identiche`),
-      h("span", { class: "muted" }, `${formatBytes(group.size)}${each}${isFolder ? `, ${fileCount(group.fileCount)}` : ""}`)
-    ),
-    h(
-      "ul",
-      { class: "dup-paths" },
-      ...group.paths.map((path) => h("li", null, path)),
-      hidden > 0 && h("li", { class: "muted" }, `… e altre ${formatNumber(hidden)}`)
-    )
-  );
-}
-
-function duplicatesSearching(): HTMLElement {
-  const fill = h("div", { class: "progress-fill" });
-  const bar = h("div", { class: "progress-bar", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100 }, fill);
-  const label = h("span", null);
-  const count = h("span", { class: "progress-count" });
-
-  onDuplicateProgress((progress) => {
-    const counting = progress?.phase === "hash" && progress.total > 0;
-    const percent = counting ? Math.round((progress.done / progress.total) * 100) : 0;
-    label.textContent = progress?.phase === "hash" ? "Confronto del contenuto dei file che potrebbero essere uguali" : "Lettura dell'elenco dei file";
-    count.textContent = counting ? `${formatBytes(progress.done)} di ${formatBytes(progress.total)}` : "";
-    fill.style.width = `${percent}%`;
-    bar.classList.toggle("indeterminate", !counting);
-    if (counting) bar.setAttribute("aria-valuenow", String(percent));
-    else bar.removeAttribute("aria-valuenow");
-  });
-
-  return h("div", { class: "progress" }, h("div", { class: "progress-text" }, label, count), bar);
-}
-
-function duplicatesPanel(job: Job): HTMLElement {
-  const search = state.duplicateSearch;
-  const searchingHere = search?.jobId === job.id;
-  const result = state.duplicates.get(job.id);
-
-  const action = searchingHere
-    ? h("button", { type: "button", class: "btn btn-small", disabled: search.cancelling, onclick: guard(cancelDuplicates) }, search.cancelling ? "Annullamento…" : "Annulla")
-    : h(
-        "button",
-        { type: "button", class: "btn btn-small", disabled: search !== null || state.running !== null, onclick: guard(() => findDuplicates(job.id)) },
-        result ? "Cerca di nuovo" : "Cerca duplicati"
-      );
-  const head = h("div", { class: "panel-head" }, h("h2", null, "Duplicati nella sorgente"), action);
-  const panel = (...body: (HTMLElement | false)[]) => h("section", { class: "panel", "aria-label": "Duplicati nella sorgente" }, head, ...body);
-
-  if (searchingHere) return panel(duplicatesSearching());
-  if (result?.status === "error") return panel(h("p", { class: "warn" }, result.message));
-  if (result?.status !== "ready") {
-    return panel(
-      h("p", { class: "muted small" }, "Trova i file e le cartelle presenti più volte con lo stesso identico contenuto. È una sola lettura: non viene spostato né cancellato nulla."),
-      search !== null && h("p", { class: "muted small" }, "Una ricerca è in corso su un altro backup.")
-    );
-  }
-
-  const { summary } = result;
-  const unreadable = summary.unreadable > 0 && h("p", { class: "warn small" }, `${formatNumber(summary.unreadable)} cartelle o file non leggibili: non sono stati confrontati.`);
-  if (summary.groups.length === 0) {
-    return panel(h("p", { class: "muted" }, `Nessun duplicato fra i ${fileCount(summary.scannedFiles)} della sorgente.`), unreadable);
-  }
-  const copies = summary.redundantFiles === 1 ? "1 copia in più occupa" : `${formatNumber(summary.redundantFiles)} copie in più occupano`;
-  return panel(
-    h("p", null, `${copies} ${formatBytes(summary.recoverableBytes)}, su ${fileCount(summary.scannedFiles)} controllati.`),
-    unreadable,
-    h(
-      "ul",
-      { class: "dup-list" },
-      ...summary.groups.map(duplicateGroup),
-      summary.groupsOmitted > 0 && h("li", { class: "muted small" }, `… e altri ${formatNumber(summary.groupsOmitted)} gruppi più piccoli`)
-    )
-  );
-}
-
-const ACTION_LABELS: Record<ReorgAction, { label: string; verb: string }> = {
-  move: { label: "Sposta", verb: "in" },
-  merge: { label: "Unisci", verb: "dentro" },
-  rename: { label: "Rinomina", verb: "in" },
-  removeDuplicate: { label: "Elimina la copia", verb: "e conserva" },
-};
-
-function proposalText(proposal: ReorgProposal): HTMLElement {
-  const { label, verb } = ACTION_LABELS[proposal.action];
-  return h(
-    "div",
-    { class: "dup-head" },
-    h("span", { class: `pill ${proposal.action === "removeDuplicate" ? "pill-warn" : "pill-info"}` }, label),
-    h("span", { class: "plan-path" }, proposal.from),
-    h("span", { class: "muted" }, verb),
-    h("span", { class: "plan-path" }, proposal.to)
-  );
-}
-
-function proposalItem(job: Job, proposal: ReorgProposal, index: number): HTMLElement {
-  const box = h("input", { type: "checkbox", disabled: state.applying !== null, "aria-label": `Applica: ${ACTION_LABELS[proposal.action].label} ${proposal.from}` }) as HTMLInputElement;
-  box.checked = state.planSelection.get(job.id)?.has(index) ?? false;
-  box.addEventListener("change", () => toggleProposal(job.id, index));
-  return h(
-    "li",
-    { class: "dup-group plan-item" },
-    box,
-    h("div", { class: "plan-item-text" }, proposalText(proposal), proposal.reason && h("p", { class: "muted small" }, proposal.reason))
-  );
-}
-
-/** Pulsante per applicare le proposte spuntate, con una conferma prima di toccare la sorgente */
-function applyControls(job: Job): HTMLElement | false {
-  const selected = state.planSelection.get(job.id)?.size ?? 0;
-  if (selected === 0) return h("p", { class: "muted small" }, "Spunta le proposte che vuoi applicare alla sorgente.");
-  const what = selected === 1 ? "la proposta selezionata" : `le ${formatNumber(selected)} proposte selezionate`;
-  if (!state.confirmApply) {
-    return h(
-      "div",
-      { class: "actions" },
-      h("button", { type: "button", class: "btn", disabled: state.running !== null, onclick: () => askApply(true) }, state.running !== null ? "Un backup è in corso" : `Applica ${what}…`)
-    );
-  }
-  return h(
-    "div",
-    { class: "plan-confirm", role: "alertdialog", "aria-label": "Conferma" },
-    h("p", null, `Stai per modificare la cartella sorgente applicando ${what}.`),
-    h(
-      "ul",
-      { class: "plan-notes small" },
-      h("li", null, "Le cartelle vengono spostate subito, senza mai sovrascrivere nulla."),
-      h("li", null, "Ciò che viene eliminato va nel Cestino, dopo aver ricontrollato che sia ancora una copia identica."),
-      h("li", null, "Al prossimo backup le cartelle spostate verranno copiate di nuovo nella nuova posizione.")
-    ),
-    h(
-      "div",
-      { class: "actions" },
-      h("button", { type: "button", class: "btn", onclick: () => askApply(false) }, "Annulla"),
-      h("button", { type: "button", class: "btn btn-danger", onclick: guard(() => applyPlan(job.id)) }, "Applica alla sorgente")
-    )
-  );
-}
-
-const OUTCOME_LABELS: Record<ApplyOutcome["status"], { label: string; pill: string }> = {
-  done: { label: "Fatto", pill: "pill-ok" },
-  partial: { label: "In parte", pill: "pill-warn" },
-  failed: { label: "Non applicata", pill: "pill-warn" },
-};
-
-/** Esito dell'applicazione: resta visibile finché non viene chiuso, anche se la proposta non c'è più */
-function applyResultPanel(job: Job): HTMLElement | false {
-  const result = state.applyResults.get(job.id);
-  if (!result) return false;
-  const done = result.outcomes.filter((o) => o.status !== "failed").length;
-  return h(
-    "section",
-    { class: "panel", "aria-label": "Esito della riorganizzazione" },
-    h(
-      "div",
-      { class: "panel-head" },
-      h("h2", null, "Esito della riorganizzazione"),
-      h("button", { type: "button", class: "btn btn-small", onclick: () => dismissApplyResult(job.id) }, "Chiudi")
-    ),
-    h("p", null, `${formatNumber(done)} di ${formatNumber(result.outcomes.length)} proposte applicate alla sorgente.`),
-    h(
-      "ul",
-      { class: "dup-list" },
-      ...result.outcomes.map((outcome) =>
-        h(
-          "li",
-          { class: "dup-group" },
-          h("div", { class: "dup-head" }, h("span", { class: `pill ${OUTCOME_LABELS[outcome.status].pill}` }, OUTCOME_LABELS[outcome.status].label), proposalText(outcome.proposal)),
-          h("p", { class: outcome.status === "done" ? "muted small" : "warn small" }, outcome.detail)
-        )
-      )
-    ),
-    h(
-      "div",
-      { class: "actions" },
-      h("button", { type: "button", class: "link", onclick: guard(() => openApplyLog(result.logPath)) }, "Apri il registro delle operazioni")
-    )
-  );
-}
-
-function proposalRunning(): HTMLElement {
-  const label = h("span", null);
-  onProposalProgress((chars) => {
-    label.textContent = chars > 0 ? `Il modello sta scrivendo la proposta: ${formatNumber(chars)} caratteri` : "Il modello sta leggendo l'elenco delle cartelle. Con un modello grande può volerci qualche minuto.";
-  });
-  return h(
-    "div",
-    { class: "progress" },
-    h("div", { class: "progress-text" }, label),
-    h("div", { class: "progress-bar indeterminate", role: "progressbar" }, h("div", { class: "progress-fill" }))
-  );
-}
-
-function reorganizePanel(job: Job): HTMLElement {
-  const { ai, proposal } = state;
-  const runningHere = proposal?.jobId === job.id;
-  const result = state.plans.get(job.id);
-  const title = h("h2", null, "Proposta di riorganizzazione");
-  const panel = (action: HTMLElement | false, ...body: (HTMLElement | false)[]) =>
-    h("section", { class: "panel", "aria-label": "Proposta di riorganizzazione" }, h("div", { class: "panel-head" }, title, action), ...body);
-  const recheck = h("button", { type: "button", class: "btn btn-small", disabled: state.aiChecking, onclick: guard(checkAi) }, "Ricontrolla");
-
-  if (state.applying?.jobId === job.id) {
-    const { done, total, cancelling } = state.applying;
-    const percent = total > 0 ? Math.round((done / total) * 100) : 0;
-    const fill = h("div", { class: "progress-fill" });
-    fill.style.width = `${percent}%`;
-    return panel(
-      h("button", { type: "button", class: "btn btn-small", disabled: cancelling, onclick: guard(cancelApply) }, cancelling ? "Annullamento…" : "Annulla"),
-      h(
-        "div",
-        { class: "progress" },
-        h("div", { class: "progress-text" }, h("span", null, "Applicazione delle proposte alla sorgente"), h("span", { class: "progress-count" }, `${formatNumber(done)} di ${formatNumber(total)}`)),
-        h("div", { class: "progress-bar", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": percent }, fill)
-      )
-    );
-  }
-  if (runningHere) {
-    const cancel = h("button", { type: "button", class: "btn btn-small", disabled: proposal.cancelling, onclick: guard(cancelProposal) }, proposal.cancelling ? "Annullamento…" : "Annulla");
-    return panel(cancel, proposalRunning());
-  }
-  if (!ai) return panel(false, h("p", { class: "muted small" }, "Ricerca dei modelli di intelligenza artificiale installati su questo computer…"));
-  if (!ai.available) {
-    return panel(
-      recheck,
-      h("p", { class: "muted" }, "Per proporre come riordinare le cartelle serve Ollama, un programma gratuito che esegue i modelli di intelligenza artificiale su questo computer. Non risulta in esecuzione."),
-      h("p", { class: "muted small" }, "Installalo da ollama.com, scarica un modello (per esempio con il comando: ollama pull gemma2:9b) e premi Ricontrolla.")
-    );
-  }
-  if (ai.models.length === 0) {
-    return panel(recheck, h("p", { class: "muted" }, "Ollama è in esecuzione ma non ha modelli installati. Scaricane uno (per esempio con il comando: ollama pull gemma2:9b) e premi Ricontrolla."));
-  }
-
-  const select = h(
-    "select",
-    { class: "select", "aria-label": "Modello", disabled: proposal !== null },
-    ...ai.models.map((m) => h("option", { value: m.name }, `${m.name} — ${[m.parameterSize, formatBytes(m.size)].filter(Boolean).join(", ")}`))
-  );
-  select.value = ai.selected ?? ai.models[0].name;
-  select.addEventListener("change", guard(() => selectAiModel(select.value)));
-  const start = h(
-    "button",
-    { type: "button", class: "btn btn-small", disabled: proposal !== null, onclick: guard(() => proposeReorganization(job.id)) },
-    result ? "Proponi di nuovo" : "Proponi"
-  );
-  const controls = h("div", { class: "plan-controls" }, h("label", { class: "plan-model" }, h("span", { class: "muted small" }, "Modello"), select), start);
-  const intro = h(
-    "p",
-    { class: "muted small" },
-    "Un modello di intelligenza artificiale in esecuzione su questo computer legge i nomi delle cartelle e suggerisce come riordinarle. Nulla esce dal computer, e nulla viene spostato senza la tua conferma."
-  );
-
-  const searched = state.duplicates.get(job.id)?.status === "ready";
-  const duplicatesNote = h(
-    "p",
-    { class: "muted small" },
-    searched ? "La proposta terrà conto dei duplicati trovati." : "Se prima cerchi i duplicati, la proposta ne tiene conto e può indicare le copie da eliminare."
-  );
-  if (result?.status === "error") return panel(false, controls, h("p", { class: "warn" }, result.message));
-  if (result?.status !== "ready") {
-    return panel(false, intro, duplicatesNote, controls, proposal !== null && h("p", { class: "muted small" }, "Una proposta è in preparazione per un altro backup."));
-  }
-  const { plan } = result;
-  return panel(
-    false,
-    controls,
-    plan.summary !== "" && h("p", null, plan.summary),
-    plan.proposals.length === 0 && h("p", { class: "muted" }, "Il modello non ha proposto modifiche."),
-    plan.proposals.length > 0 && h("ul", { class: "dup-list" }, ...plan.proposals.map((proposal, index) => proposalItem(job, proposal, index))),
-    plan.truncated && h("p", { class: "warn small" }, "Il modello si è interrotto prima di finire: l'elenco può essere incompleto."),
-    plan.discarded > 0 &&
-      h(
-        "p",
-        { class: "muted small" },
-        `${plan.discarded === 1 ? "1 proposta scartata perché indicava" : `${formatNumber(plan.discarded)} proposte scartate perché indicavano`} cartelle inesistenti o spostamenti impossibili.`
-      ),
-    h("p", { class: "muted small" }, `Sono suggerimenti di ${plan.model}, da valutare: nulla viene toccato finché non scegli tu cosa applicare.`),
-    plan.proposals.length > 0 && applyControls(job)
   );
 }
 
@@ -675,10 +371,7 @@ export function renderJob(job: Job): HTMLElement[] {
         "div",
         { class: "job-main" },
         h("div", { class: "fields" }, folderField(job, "Sorgente", "sourceRoot"), folderField(job, "Destinazione di default", "defaultDestination")),
-        foldersPanel(job),
-        duplicatesPanel(job),
-        reorganizePanel(job),
-        applyResultPanel(job)
+        foldersPanel(job)
       ),
       running ? runningPanel() : previewPanel(job)
     ),

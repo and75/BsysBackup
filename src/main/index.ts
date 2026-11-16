@@ -1,8 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from "electron";
 import { basename, dirname, join } from "node:path";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
-import { createJob, deleteJob, followReorganization, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
+import { createJob, deleteJob, followReorganizationAt, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
 import { applyProposals, formatApplyLog } from "../core/applier";
 import { analyzeSource, listSource, summarizeDuplicates, type SourceAnalysis } from "../core/duplicates";
 import { listModels, ollamaBaseUrl, pickDefaultModel } from "../core/ollama";
@@ -10,16 +10,22 @@ import { proposeReorganization, UnreadableReplyError } from "../core/organizer";
 import { loadSettings, saveSettings } from "../core/settings";
 import { checkDevices, previewDiff, runBackup, summarizePreview } from "../core/runner";
 import { readHistory, reportTextPath, toReportSummary } from "../core/report";
-import { isExcluded, toAbs } from "../core/router";
-import type { AiStatus, ApplyResult, DuplicateProgress, ProgressInfo, ReorgPlan } from "../core/types";
+import { toAbs } from "../core/router";
+import type { AiStatus, ApplyResult, DuplicateProgress, Job, ProgressInfo, ReorgPlan, ReorgProposal } from "../core/types";
 
 let currentRun: AbortController | null = null;
 let currentSearch: AbortController | null = null;
 let currentProposal: AbortController | null = null;
-/** Ultima ricerca di duplicati per backup: è il punto di partenza della proposta di riorganizzazione */
-const analyses = new Map<string, SourceAnalysis>();
-/** Ultima proposta per backup: si possono applicare solo le proposte che l'app stessa ha validato */
-const plans = new Map<string, { sourceRoot: string; plan: ReorgPlan }>();
+/**
+ * Ciò che Gestione file sa della cartella su cui sta lavorando: l'ultima ricerca di duplicati e l'ultima
+ * proposta. Si possono applicare solo eliminazioni e proposte che l'app stessa ha calcolato e validato.
+ */
+interface Workspace {
+  root: string;
+  analysis?: SourceAnalysis;
+  plan?: ReorgPlan;
+}
+let workspace: Workspace | null = null;
 let currentApply: AbortController | null = null;
 
 const jobsDir = () => join(app.getPath("userData"), "jobs");
@@ -69,6 +75,51 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
+function workspaceFor(root: string): Workspace {
+  if (workspace?.root !== root) workspace = { root };
+  return workspace;
+}
+
+/**
+ * Applica alla cartella le proposte date, scrive il registro e aggiorna i backup che la riguardano.
+ * Dopo, ciò che si sapeva della cartella non vale più: descrive file che sono stati spostati.
+ */
+async function applyToFolder(sender: WebContents, root: string, proposals: ReorgProposal[]): Promise<ApplyResult> {
+  if (currentRun) throw new Error("Un backup è in corso: riordina la cartella quando è finito.");
+  if (currentSearch || currentProposal || currentApply) throw new Error("Un'altra operazione sulla cartella è in corso.");
+  if (proposals.length === 0) throw new Error("Nessun elemento selezionato.");
+
+  const apply = new AbortController();
+  currentApply = apply;
+  try {
+    const outcomes = await applyProposals(root, proposals, {
+      trash: (path) => shell.trashItem(path),
+      signal: apply.signal,
+      onProgress: (done, total) => {
+        if (!sender.isDestroyed()) sender.send("reorg:progress", { done, total });
+      },
+    });
+    workspace = { root };
+
+    const jobs: Job[] = [];
+    for (const job of await listJobs(jobsDir())) {
+      const updated = followReorganizationAt(job, root, outcomes);
+      if (JSON.stringify(updated) === JSON.stringify(job)) continue;
+      await saveJob(jobsDir(), updated);
+      jobs.push(updated);
+    }
+
+    const now = new Date();
+    const stamp = now.toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
+    const logPath = join(applyLogsDir(), `riorganizzazione-${stamp}.txt`);
+    await mkdir(applyLogsDir(), { recursive: true });
+    await writeFile(logPath, formatApplyLog(root, outcomes, now), "utf-8");
+    return { outcomes, jobs, logPath };
+  } finally {
+    currentApply = null;
+  }
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle("dialog:selectFolder", async () => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
@@ -89,10 +140,7 @@ function registerIpcHandlers(): void {
     return updated;
   });
 
-  ipcMain.handle("job:delete", (_e, args: { jobId: string }) => {
-    analyses.delete(args.jobId);
-    return deleteJob(jobsDir(), args.jobId);
-  });
+  ipcMain.handle("job:delete", (_e, args: { jobId: string }) => deleteJob(jobsDir(), args.jobId));
 
   ipcMain.handle("job:setOverride", async (_e, args: { jobId: string; relativePath: string; destination: string }) => {
     const updated = setOverride(await loadJob(jobsDir(), args.jobId), args.relativePath, args.destination);
@@ -170,10 +218,16 @@ function registerIpcHandlers(): void {
     currentRun?.abort();
   });
 
-  ipcMain.handle("duplicates:find", async (event, args: { jobId: string }) => {
+  ipcMain.handle("files:getFolder", async () => (await loadSettings(settingsPath())).lastFolder ?? null);
+
+  ipcMain.handle("files:setFolder", async (_e, args: { root: string }) => {
+    await saveSettings(settingsPath(), { ...(await loadSettings(settingsPath())), lastFolder: args.root });
+  });
+
+  ipcMain.handle("duplicates:find", async (event, args: { root: string }) => {
     if (currentRun) throw new Error("Un backup è in corso: cerca i duplicati quando è finito.");
     if (currentSearch) throw new Error("Una ricerca di duplicati è già in corso.");
-    if (currentApply) throw new Error("La sorgente è in corso di riorganizzazione.");
+    if (currentApply) throw new Error("La cartella è in corso di riorganizzazione.");
     const search = new AbortController();
     currentSearch = search;
 
@@ -186,16 +240,10 @@ function registerIpcHandlers(): void {
     };
 
     try {
-      const job = await loadJob(jobsDir(), args.jobId);
-      analyses.delete(job.id);
-      // Ciò che è escluso dal backup resta fuori anche da qui: spesso è escluso proprio perché ingombrante o irrilevante
-      const analysis = await analyzeSource(job.sourceRoot, {
-        signal: search.signal,
-        onProgress: sendProgress,
-        shouldSkip: (relPath) => isExcluded(job, relPath),
-      });
-      analyses.set(job.id, analysis);
-      return summarizeDuplicates(analysis);
+      const space = workspaceFor(args.root);
+      space.analysis = undefined;
+      space.analysis = await analyzeSource(args.root, { signal: search.signal, onProgress: sendProgress });
+      return summarizeDuplicates(space.analysis);
     } catch (err) {
       if (search.signal.aborted) throw new Error("Ricerca dei duplicati annullata.");
       throw err;
@@ -206,6 +254,22 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("duplicates:cancel", () => {
     currentSearch?.abort();
+  });
+
+  // Elimina le copie scelte dall'utente nell'elenco dei duplicati, lasciando sempre almeno una copia per gruppo
+  ipcMain.handle("duplicates:remove", async (event, args: { root: string; removals: { group: number; path: string }[] }): Promise<ApplyResult> => {
+    const analysis = workspace?.root === args.root ? workspace.analysis : undefined;
+    if (!analysis) throw new Error("L'elenco dei duplicati non è più valido: ripeti la ricerca.");
+    const proposals: ReorgProposal[] = [];
+    const byGroup = new Map<number, Set<string>>();
+    for (const { group, path } of args.removals) byGroup.set(group, (byGroup.get(group) ?? new Set()).add(path));
+    for (const [index, paths] of byGroup) {
+      const group = analysis.duplicates.groups[index];
+      const keep = group?.paths.find((p) => !paths.has(p));
+      if (!group || !keep) throw new Error("Di ogni gruppo di duplicati deve restare almeno una copia.");
+      for (const path of group.paths) if (paths.has(path)) proposals.push({ action: "removeDuplicate", from: path, to: keep, reason: "" });
+    }
+    return applyToFolder(event.sender, args.root, proposals);
   });
 
   ipcMain.handle("ai:status", async (): Promise<AiStatus> => {
@@ -220,9 +284,8 @@ function registerIpcHandlers(): void {
     await saveSettings(settingsPath(), { ...(await loadSettings(settingsPath())), aiModel: args.model });
   });
 
-  ipcMain.handle("ai:propose", async (event, args: { jobId: string; model: string }) => {
+  ipcMain.handle("ai:propose", async (event, args: { root: string; model: string }) => {
     if (currentProposal) throw new Error("Una proposta di riorganizzazione è già in preparazione.");
-    const job = await loadJob(jobsDir(), args.jobId);
     const proposal = new AbortController();
     currentProposal = proposal;
 
@@ -235,13 +298,13 @@ function registerIpcHandlers(): void {
     };
 
     try {
-      plans.delete(job.id);
+      const space = workspaceFor(args.root);
+      space.plan = undefined;
       // Se i duplicati sono già stati cercati la proposta ne tiene conto; altrimenti basta l'elenco dei file
-      const searched = analyses.get(job.id);
-      const analysis = searched?.sourceRoot === job.sourceRoot ? searched : await listSource(job.sourceRoot, (relPath) => isExcluded(job, relPath));
+      const analysis = space.analysis ?? (await listSource(args.root));
       proposal.signal.throwIfAborted();
       const plan = await proposeReorganization(analysis, { baseUrl: ollamaBaseUrl(), model: args.model, signal: proposal.signal, onText: sendText });
-      plans.set(job.id, { sourceRoot: job.sourceRoot, plan });
+      if (workspace === space) space.plan = plan;
       return plan;
     } catch (err) {
       if (proposal.signal.aborted) throw new Error("Proposta annullata.");
@@ -261,40 +324,11 @@ function registerIpcHandlers(): void {
     currentProposal?.abort();
   });
 
-  ipcMain.handle("reorg:apply", async (event, args: { jobId: string; indexes: number[] }): Promise<ApplyResult> => {
-    if (currentRun) throw new Error("Un backup è in corso: riordina la sorgente quando è finito.");
-    if (currentSearch || currentProposal || currentApply) throw new Error("Un'altra operazione sulla sorgente è in corso.");
-    const job = await loadJob(jobsDir(), args.jobId);
-    const stored = plans.get(job.id);
-    if (!stored || stored.sourceRoot !== job.sourceRoot) throw new Error("La proposta non è più valida: chiedine una nuova.");
-    const proposals = [...new Set(args.indexes)].sort((a, b) => a - b).map((i) => stored.plan.proposals[i]).filter(Boolean);
-    if (proposals.length === 0) throw new Error("Nessuna proposta selezionata.");
-
-    const apply = new AbortController();
-    currentApply = apply;
-    try {
-      const outcomes = await applyProposals(job.sourceRoot, proposals, {
-        trash: (path) => shell.trashItem(path),
-        signal: apply.signal,
-        onProgress: (done, total) => {
-          if (!event.sender.isDestroyed()) event.sender.send("reorg:progress", { done, total });
-        },
-      });
-      // La sorgente è cambiata: l'elenco dei duplicati e la proposta descrivono cartelle che non ci sono più
-      analyses.delete(job.id);
-      plans.delete(job.id);
-      const updated = followReorganization(job, outcomes);
-      await saveJob(jobsDir(), updated);
-
-      const now = new Date();
-      const stamp = now.toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
-      const logPath = join(applyLogsDir(), `riorganizzazione-${stamp}.txt`);
-      await mkdir(applyLogsDir(), { recursive: true });
-      await writeFile(logPath, formatApplyLog(job.sourceRoot, outcomes, now), "utf-8");
-      return { outcomes, job: updated, logPath };
-    } finally {
-      currentApply = null;
-    }
+  ipcMain.handle("reorg:apply", async (event, args: { root: string; indexes: number[] }): Promise<ApplyResult> => {
+    const plan = workspace?.root === args.root ? workspace.plan : undefined;
+    if (!plan) throw new Error("La proposta non è più valida: chiedine una nuova.");
+    const proposals = [...new Set(args.indexes)].sort((a, b) => a - b).map((i) => plan.proposals[i]).filter(Boolean);
+    return applyToFolder(event.sender, args.root, proposals);
   });
 
   ipcMain.handle("reorg:cancel", () => {

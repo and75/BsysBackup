@@ -63,7 +63,34 @@ button, input { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--border);
 }
 .brand, .topbar-name { font-size: 18px; font-weight: 600; }
-.version { margin-left: 10px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.version { margin-top: auto; padding: 0 12px; font-size: 12px; color: var(--muted); }
+
+/* Barra laterale con le sezioni */
+#app { display: flex; align-items: flex-start; min-height: 100vh; }
+.content { flex: 1; min-width: 0; }
+.sidebar {
+  position: sticky;
+  top: 0;
+  width: 208px;
+  height: 100vh;
+  flex-shrink: 0;
+  padding: 18px 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+.sidebar .brand { padding: 0 12px 16px; }
+.nav-item { min-height: 40px; padding: 0 12px; display: flex; align-items: center; border: none; border-radius: 8px; background: none; color: var(--text-soft); cursor: pointer; text-align: left; }
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
+.nav-item[aria-current="page"] { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.nav-sub { padding-left: 24px; }
+.nav-group { margin-top: 10px; padding: 6px 12px 4px; font-size: 12px; color: var(--muted); }
+.page.narrow-wide { max-width: 900px; }
+.shortcuts { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
+.dup-copy { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.dup-copy input { width: 16px; height: 16px; margin: 2px 0 0; flex-shrink: 0; }
 .topbar-title { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .page { max-width: 1240px; margin: 0 auto; padding: 24px 32px 32px; display: flex; flex-direction: column; gap: 22px; }
 .page.narrow { max-width: 720px; }
@@ -278,6 +305,7 @@ button.tree-toggle:hover { background: var(--surface-2); color: var(--text); }
 .plan-item input { width: 18px; height: 18px; margin: 2px 0 0; flex-shrink: 0; }
 .plan-item-text { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .plan-confirm { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: 8px; }
+.actions { align-items: center; }
 .plan-notes { padding-left: 18px; list-style: disc; display: flex; flex-direction: column; gap: 4px; color: var(--text-soft); }
 
 .check { min-height: 44px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-soft); cursor: pointer; }

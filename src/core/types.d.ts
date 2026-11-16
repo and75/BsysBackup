@@ -227,8 +227,8 @@ export interface ApplyOutcome {
 
 export interface ApplyResult {
   outcomes: ApplyOutcome[];
-  /** Il backup con destinazioni personalizzate ed esclusioni aggiornate ai nuovi percorsi */
-  job: Job;
+  /** I backup le cui destinazioni personalizzate, esclusioni o sorgente sono state aggiornate ai nuovi percorsi */
+  jobs: Job[];
   /** File di testo con l'elenco delle operazioni fatte */
   logPath: string;
 }

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { applyProposals } from "../../src/core/applier";
-import { createJob, followReorganization } from "../../src/core/job";
+import { createJob, followReorganization, followReorganizationAt } from "../../src/core/job";
 import { pathExists } from "../../src/core/scanner";
 import type { ApplyOutcome, ReorgAction, ReorgProposal } from "../../src/core/types";
 
@@ -209,5 +209,55 @@ describe("followReorganization", () => {
 
   it("non cambia nulla se nella posizione di partenza è rimasto qualcosa", () => {
     expect(followReorganization(job, [done("merge", "Foto", "Documenti", false)])).toEqual(job);
+  });
+
+  it("unendo una sottocartella nella radice della sorgente, le regole delle sue parti salgono di un livello", () => {
+    const flat = followReorganization(job, [done("merge", "Foto", "")]);
+    expect(paths(flat)).toEqual(["2024 -> F:/recenti", "Documenti -> G:/doc", "escluso scarti"]);
+  });
+});
+
+describe("followReorganizationAt", () => {
+  const done = (action: ReorgAction, from: string, to: string): ApplyOutcome => ({ proposal: proposal(action, from, to), status: "done", detail: "", fromGone: true });
+  const source = join(tmpdir(), "bsys-archivio", "Lavoro");
+  const job = {
+    ...createJob({ name: "Lavoro", sourceRoot: source, defaultDestination: "/d" }),
+    overrides: [{ relativePath: "Clienti/Rossi", destination: "E:/rossi" }],
+    excludedPaths: [{ relativePath: "Clienti/Rossi/bozze", isDirectory: true }],
+  };
+  const rules = (j: typeof job) => [...j.overrides.map((o) => o.relativePath), ...j.excludedPaths.map((e) => `escluso ${e.relativePath}`)];
+
+  it("segue una riorganizzazione fatta direttamente nella sorgente", () => {
+    expect(rules(followReorganizationAt(job, source, [done("rename", "Clienti", "Committenti")]))).toEqual(["Committenti/Rossi", "escluso Committenti/Rossi/bozze"]);
+  });
+
+  it("segue una riorganizzazione fatta in una sottocartella della sorgente", () => {
+    const updated = followReorganizationAt(job, join(source, "Clienti"), [done("move", "Rossi", "Archivio/Rossi")]);
+    expect(rules(updated)).toEqual(["Clienti/Archivio/Rossi", "escluso Clienti/Archivio/Rossi/bozze"]);
+    expect(updated.sourceRoot).toBe(source);
+  });
+
+  it("segue una riorganizzazione fatta in una cartella che contiene la sorgente", () => {
+    const updated = followReorganizationAt(job, dirname(source), [done("rename", "Lavoro/Clienti", "Lavoro/Committenti")]);
+    expect(rules(updated)).toEqual(["Committenti/Rossi", "escluso Committenti/Rossi/bozze"]);
+  });
+
+  it("punta alla nuova posizione quando viene spostata la sorgente stessa, o una cartella che la contiene", () => {
+    const renamed = followReorganizationAt(job, dirname(source), [done("rename", "Lavoro", "Ufficio")]);
+    expect(renamed.sourceRoot).toBe(join(dirname(source), "Ufficio"));
+    expect(rules(renamed)).toEqual(rules(job));
+    const moved = followReorganizationAt(job, dirname(dirname(source)), [done("move", "bsys-archivio", "Vecchi/archivio")]);
+    expect(moved.sourceRoot).toBe(join(dirname(dirname(source)), "Vecchi", "archivio", "Lavoro"));
+  });
+
+  it("lascia decadere le regole di ciò che esce dalla sorgente", () => {
+    const updated = followReorganizationAt(job, dirname(source), [done("move", "Lavoro/Clienti/Rossi", "Altrove/Rossi")]);
+    expect(rules(updated)).toEqual([]);
+    expect(updated.sourceRoot).toBe(source);
+  });
+
+  it("non tocca un backup che non riguarda la cartella riordinata", () => {
+    expect(followReorganizationAt(job, join(tmpdir(), "bsys-altro"), [done("rename", "Clienti", "Committenti")])).toEqual(job);
+    expect(followReorganizationAt(job, dirname(source), [done("rename", "Privato", "Personale")])).toEqual(job);
   });
 });

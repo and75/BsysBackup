@@ -1,5 +1,5 @@
 import { readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ApplyOutcome, Job, Override } from "./types";
 import { normalizeRelPath, pathKey } from "./router";
@@ -77,7 +77,8 @@ export function followReorganization(job: Job, outcomes: ApplyOutcome[]): Job {
           // In un'unione la cartella confluisce in un'altra, che ha già le sue regole: quella della cartella sparita decade
           moved = proposal.action === "merge" ? null : { ...rule, relativePath: to };
         } else if (isUnder(rel, from)) {
-          moved = { ...rule, relativePath: to + rel.slice(from.length) };
+          // "to" è vuoto quando la cartella confluisce nella radice della sorgente
+          moved = { ...rule, relativePath: (to ? `${to}/` : "") + rel.slice(from.length + 1) };
         }
         if (moved && !result.some((r) => pathKey(r.relativePath) === pathKey((moved as T).relativePath))) result.push(moved);
       }
@@ -87,6 +88,56 @@ export function followReorganization(job: Job, outcomes: ApplyOutcome[]): Job {
     excludedPaths = follow(excludedPaths);
   }
   return { ...job, overrides, excludedPaths };
+}
+
+/** Percorso di `inner` relativo a `outer` ("" se coincidono), o null se `inner` non sta dentro `outer` */
+function relativeWithin(outer: string, inner: string): string | null {
+  const rel = relative(resolve(outer), resolve(inner));
+  if (rel.startsWith("..") || isAbsolute(rel)) return null;
+  return rel.split(sep).join("/");
+}
+
+/**
+ * Come followReorganization, ma per una riorganizzazione fatta in una cartella qualsiasi (`root`), con
+ * proposte relative a quella: il backup la segue se la sua sorgente contiene quella cartella, ne è
+ * contenuta o coincide. Un backup la cui sorgente è stata spostata o rinominata punta alla nuova posizione.
+ */
+export function followReorganizationAt(job: Job, root: string, outcomes: ApplyOutcome[]): Job {
+  // La cartella riordinata è la sorgente o una sua parte: basta riportare i percorsi alla sorgente
+  const below = relativeWithin(job.sourceRoot, root);
+  if (below !== null) {
+    const prefix = below ? `${below}/` : "";
+    return followReorganization(
+      job,
+      outcomes.map((o) => ({ ...o, proposal: { ...o.proposal, from: prefix + normalizeRelPath(o.proposal.from), to: prefix + normalizeRelPath(o.proposal.to) } }))
+    );
+  }
+
+  // La sorgente è una parte della cartella riordinata
+  let source = relativeWithin(root, job.sourceRoot);
+  if (source === null) return job;
+  let result = job;
+  for (const outcome of outcomes) {
+    if (!outcome.fromGone) continue;
+    const { action } = outcome.proposal;
+    const from = normalizeRelPath(outcome.proposal.from);
+    const to = normalizeRelPath(outcome.proposal.to);
+    if (pathKey(source) === pathKey(from) || isUnder(source, from)) {
+      // È stata spostata la sorgente stessa, o una cartella che la contiene. Se è confluita altrove o è finita nel
+      // Cestino il backup resta com'è: risulterà scollegato, ed è l'utente a decidere che farne.
+      if (action === "move" || action === "rename") {
+        source = to + source.slice(from.length);
+        result = { ...result, sourceRoot: join(resolve(root), ...source.split("/")) };
+      }
+    } else if (isUnder(from, source)) {
+      const inside = (relPath: string) => relPath.slice(source!.length + 1);
+      const staysInside = action !== "removeDuplicate" && (pathKey(to) === pathKey(source) || isUnder(to, source));
+      // Ciò che esce dalla sorgente non fa più parte del backup: le sue regole decadono, come per ciò che viene eliminato
+      const proposal = staysInside ? { ...outcome.proposal, from: inside(from), to: inside(to) } : { ...outcome.proposal, action: "removeDuplicate" as const, from: inside(from), to: "" };
+      result = followReorganization(result, [{ ...outcome, proposal }]);
+    }
+  }
+  return result;
 }
 
 export type JobChanges = Partial<Pick<Job, "name" | "sourceRoot" | "defaultDestination" | "verifyWithHash">>;
