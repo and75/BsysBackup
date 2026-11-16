@@ -365,8 +365,7 @@ function proposalRunning(): HTMLElement {
   );
 }
 
-function reorganizePanel(job: Job): HTMLElement | false {
-  if (state.duplicates.get(job.id)?.status !== "ready") return false;
+function reorganizePanel(job: Job): HTMLElement {
   const { ai, proposal } = state;
   const runningHere = proposal?.jobId === job.id;
   const result = state.plans.get(job.id);
@@ -422,12 +421,18 @@ function reorganizePanel(job: Job): HTMLElement | false {
   const intro = h(
     "p",
     { class: "muted small" },
-    "Un modello di intelligenza artificiale in esecuzione su questo computer legge i nomi delle cartelle e i duplicati trovati, e suggerisce come riordinarli. Nulla esce dal computer, e nulla viene spostato senza la tua conferma."
+    "Un modello di intelligenza artificiale in esecuzione su questo computer legge i nomi delle cartelle e suggerisce come riordinarle. Nulla esce dal computer, e nulla viene spostato senza la tua conferma."
   );
 
+  const searched = state.duplicates.get(job.id)?.status === "ready";
+  const duplicatesNote = h(
+    "p",
+    { class: "muted small" },
+    searched ? "La proposta terrà conto dei duplicati trovati." : "Se prima cerchi i duplicati, la proposta ne tiene conto e può indicare le copie da eliminare."
+  );
   if (result?.status === "error") return panel(false, controls, h("p", { class: "warn" }, result.message));
   if (result?.status !== "ready") {
-    return panel(false, intro, controls, proposal !== null && h("p", { class: "muted small" }, "Una proposta è in preparazione per un altro backup."));
+    return panel(false, intro, duplicatesNote, controls, proposal !== null && h("p", { class: "muted small" }, "Una proposta è in preparazione per un altro backup."));
   }
   const { plan } = result;
   return panel(

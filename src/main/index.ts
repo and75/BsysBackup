@@ -4,7 +4,7 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { createJob, deleteJob, followReorganization, excludePath, includePath, listJobs, loadJob, removeOverride, saveJob, setOverride, updateJob, type JobChanges } from "../core/job";
 import { applyProposals, formatApplyLog } from "../core/applier";
-import { analyzeSource, summarizeDuplicates, type SourceAnalysis } from "../core/duplicates";
+import { analyzeSource, listSource, summarizeDuplicates, type SourceAnalysis } from "../core/duplicates";
 import { listModels, ollamaBaseUrl, pickDefaultModel } from "../core/ollama";
 import { proposeReorganization, UnreadableReplyError } from "../core/organizer";
 import { loadSettings, saveSettings } from "../core/settings";
@@ -218,8 +218,6 @@ function registerIpcHandlers(): void {
   ipcMain.handle("ai:propose", async (event, args: { jobId: string; model: string }) => {
     if (currentProposal) throw new Error("Una proposta di riorganizzazione è già in preparazione.");
     const job = await loadJob(jobsDir(), args.jobId);
-    const analysis = analyses.get(job.id);
-    if (!analysis || analysis.sourceRoot !== job.sourceRoot) throw new Error("Cerca prima i duplicati: la proposta parte da quell'elenco.");
     const proposal = new AbortController();
     currentProposal = proposal;
 
@@ -233,6 +231,10 @@ function registerIpcHandlers(): void {
 
     try {
       plans.delete(job.id);
+      // Se i duplicati sono già stati cercati la proposta ne tiene conto; altrimenti basta l'elenco dei file
+      const searched = analyses.get(job.id);
+      const analysis = searched?.sourceRoot === job.sourceRoot ? searched : await listSource(job.sourceRoot, (relPath) => isExcluded(job, relPath));
+      proposal.signal.throwIfAborted();
       const plan = await proposeReorganization(analysis, { baseUrl: ollamaBaseUrl(), model: args.model, signal: proposal.signal, onText: sendText });
       plans.set(job.id, { sourceRoot: job.sourceRoot, plan });
       return plan;

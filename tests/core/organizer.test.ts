@@ -12,6 +12,7 @@ const file = (relPath: string, size = 1000, y = 2024): FileEntry => ({ relPath, 
 const analysis: SourceAnalysis = {
   sourceRoot: "/sorgente",
   skipped: [],
+  duplicatesKnown: true,
   entries: [
     file("Foto/mare.jpg", 3000, 2019),
     file("Foto/2024/monti.jpg", 2000, 2024),
@@ -42,6 +43,12 @@ describe("describeSource", () => {
     expect(text).toContain("- fatt_23 | 1 file, 100 byte, soprattutto pdf | anni 2023");
     expect(text).toContain("File sciolti nella cartella principale: 1");
     expect(text).toContain("- 2 cartelle identiche, 4,9 KB l'una: Foto | Vecchio/Foto - Copia");
+  });
+
+  it("senza ricerca dei duplicati lo dice al modello invece di affermare che non ce ne sono", () => {
+    const text = describeSource({ ...analysis, duplicatesKnown: false, duplicates: { ...analysis.duplicates, groups: [] } });
+    expect(text).toContain("I duplicati non sono stati cercati");
+    expect(text).not.toContain("Nessun duplicato trovato");
   });
 
   it("con moltissime cartelle descrive solo i primi livelli", () => {

@@ -234,6 +234,8 @@ export interface SourceAnalysis {
   sourceRoot: string;
   entries: FileEntry[];
   duplicates: DuplicateResult;
+  /** false se i duplicati non sono stati cercati: `duplicates` è vuoto perché non si sa, non perché non ce ne sono */
+  duplicatesKnown: boolean;
   /** Cartelle o file non leggibili durante la scansione */
   skipped: string[];
 }
@@ -261,7 +263,22 @@ export async function analyzeSource(
     signal: opts.signal,
     onProgress: (done, total) => opts.onProgress?.({ phase: "hash", done, total }),
   });
-  return { sourceRoot, entries: scan.entries, duplicates, skipped: scan.skipped };
+  return { sourceRoot, entries: scan.entries, duplicates, duplicatesKnown: true, skipped: scan.skipped };
+}
+
+/**
+ * Legge solo l'elenco dei file della sorgente, senza cercare i duplicati: è questione di secondi,
+ * perché non apre nessun file. Basta a chi vuole una proposta di riorganizzazione senza aspettare la ricerca.
+ */
+export async function listSource(sourceRoot: string, shouldSkip?: (relPath: string, isDirectory: boolean) => boolean): Promise<SourceAnalysis> {
+  let scan;
+  try {
+    scan = await scanDirectory(sourceRoot, { shouldSkip });
+  } catch (err) {
+    throw new Error(`Sorgente non leggibile: ${sourceRoot} (${(err as Error).message})`);
+  }
+  const duplicates: DuplicateResult = { groups: [], redundantFiles: 0, recoverableBytes: 0, warnings: [] };
+  return { sourceRoot, entries: scan.entries, duplicates, duplicatesKnown: false, skipped: scan.skipped };
 }
 
 /** Riepilogo per l'interfaccia: conteggi e i gruppi più pesanti, senza l'elenco completo */

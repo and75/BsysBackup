@@ -36,7 +36,7 @@ const SCHEMA = {
 };
 
 const SYSTEM = `Sei un assistente che aiuta a riordinare le cartelle di un archivio personale.
-Ricevi l'elenco delle cartelle con il loro contenuto e i duplicati già trovati. Proponi poche modifiche utili e concrete, al massimo 10. Se la struttura è già ordinata, restituisci "proposals" vuoto.
+Ricevi l'elenco delle cartelle con il loro contenuto e, se sono stati cercati, i duplicati trovati. Proponi poche modifiche utili e concrete, al massimo 10. Se la struttura è già ordinata, restituisci "proposals" vuoto.
 
 Azioni possibili:
 - "move": sposta la cartella "from" nel nuovo percorso "to".
@@ -139,7 +139,11 @@ export function describeSource(analysis: SourceAnalysis): string {
     `Cartelle (${shown.length}${folders.length > shown.length ? ` di ${folders.length}, le più interne sono omesse` : ""}):`,
     ...shown.map(describeFolder),
     loose > 0 ? `\nFile sciolti nella cartella principale: ${loose}` : "",
-    groups.length > 0 ? "\nDuplicati trovati (stesso identico contenuto):" : "\nNessun duplicato trovato.",
+    !analysis.duplicatesKnown
+      ? '\nI duplicati non sono stati cercati: non proporre "removeDuplicate".'
+      : groups.length > 0
+        ? "\nDuplicati trovati (stesso identico contenuto):"
+        : "\nNessun duplicato trovato.",
     ...groups.map(describeDuplicate),
   ]
     .filter((line) => line !== "")

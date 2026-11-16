@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { analyzeSource, findDuplicates, summarizeDuplicates } from "../../src/core/duplicates";
+import { analyzeSource, findDuplicates, listSource, summarizeDuplicates } from "../../src/core/duplicates";
 import { scanDirectory } from "../../src/core/scanner";
 
 let root: string;
@@ -147,6 +147,17 @@ describe("analyzeSource", () => {
     const last = progress[progress.length - 1];
     expect(last.phase).toBe("hash");
     expect(last.done).toBe(last.total);
+  });
+
+  it("listSource elenca i file senza cercare i duplicati, e lo dichiara", async () => {
+    await put("a/uguale.txt", "uguale");
+    await put("b/uguale.txt", "uguale");
+    await put("escluso/altro.txt", "altro");
+    const listed = await listSource(root, (relPath) => relPath === "escluso");
+    expect(listed.entries.map((e) => e.relPath).sort()).toEqual(["a/uguale.txt", "b/uguale.txt"]);
+    expect(listed.duplicatesKnown).toBe(false);
+    expect(listed.duplicates.groups).toEqual([]);
+    expect((await analyzeSource(root)).duplicatesKnown).toBe(true);
   });
 
   it("fallisce se la sorgente non esiste", async () => {

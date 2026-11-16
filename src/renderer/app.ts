@@ -248,7 +248,7 @@ export function navigate(view: View): void {
       render();
       const current = state.previews.get(jobId);
       if (!current || current.status === "disconnected") await analyze(jobId);
-      if (state.duplicates.get(jobId)?.status === "ready") await checkAi();
+      if (!state.ai) await checkAi();
     })();
   }
   render();
@@ -372,7 +372,6 @@ export async function findDuplicates(jobId: string): Promise<void> {
   const sourceRoot = jobById(jobId)?.sourceRoot;
   state.duplicateSearch = search;
   state.duplicates.delete(jobId);
-  forgetPlan(jobId);
   state.applyResults.delete(jobId);
   render();
   let result: DuplicatesState | null;
@@ -385,8 +384,6 @@ export async function findDuplicates(jobId: string): Promise<void> {
   // Se nel frattempo la sorgente è stata cambiata, l'esito riguarda un'altra cartella
   if (result && jobById(jobId)?.sourceRoot === sourceRoot) state.duplicates.set(jobId, result);
   render();
-  // Con l'elenco pronto si può proporre una riorganizzazione: serve sapere se Ollama c'è e con quali modelli
-  if (result?.status === "ready") await checkAi();
 }
 
 export async function cancelDuplicates(): Promise<void> {
@@ -489,7 +486,7 @@ export async function proposeReorganization(jobId: string): Promise<void> {
     result = run.cancelling ? null : { status: "error", message: errorMessage(err) };
   }
   state.proposal = null;
-  if (result && jobById(jobId)?.sourceRoot === sourceRoot && state.duplicates.get(jobId)?.status === "ready") state.plans.set(jobId, result);
+  if (result && jobById(jobId)?.sourceRoot === sourceRoot) state.plans.set(jobId, result);
   render();
 }
 
